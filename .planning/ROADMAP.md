@@ -33,7 +33,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. App is accessible by bookmarking a URL to the iPad home screen — no App Store, no login
 **Plans:** 3 plans
 Plans:
-- [ ] 01-01-PLAN.md — Scaffold Next.js 16, Prisma schema, iPad CSS tokens, layout, manifest
+- [x] 01-01-PLAN.md — Scaffold Next.js 16, Prisma schema, iPad CSS tokens, layout, manifest
 - [ ] 01-02-PLAN.md — Job list, create form, job detail page, server actions
 - [ ] 01-03-PLAN.md — Vitest tests, seed data, iPad visual verification checkpoint
 **UI hint**: yes

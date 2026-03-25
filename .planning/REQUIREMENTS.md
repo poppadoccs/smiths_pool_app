@@ -12,7 +12,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [ ] **JOBS-01**: Worker can create a new job with a name and/or job number
 - [ ] **JOBS-02**: Worker can select an existing job from a list
 - [ ] **JOBS-03**: Worker can see job history with submission status (draft/submitted)
-- [ ] **JOBS-04**: Each job stores associated photos, form data, and metadata
+- [x] **JOBS-04**: Each job stores associated photos, form data, and metadata
 
 ### Photos
 
@@ -48,11 +48,11 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### iPad UX
 
-- [ ] **IPAD-01**: Touch targets are 48px+ minimum for field use with dirty/gloved hands
-- [ ] **IPAD-02**: Form input font is 16px+ (prevents iOS Safari auto-zoom)
-- [ ] **IPAD-03**: UI works in both landscape and portrait orientation
-- [ ] **IPAD-04**: High contrast design readable in outdoor sunlight
-- [ ] **IPAD-05**: App is accessible as a plain web app (bookmark to home screen)
+- [x] **IPAD-01**: Touch targets are 48px+ minimum for field use with dirty/gloved hands
+- [x] **IPAD-02**: Form input font is 16px+ (prevents iOS Safari auto-zoom)
+- [x] **IPAD-03**: UI works in both landscape and portrait orientation
+- [x] **IPAD-04**: High contrast design readable in outdoor sunlight
+- [x] **IPAD-05**: App is accessible as a plain web app (bookmark to home screen)
 
 ## v2 Requirements
 
@@ -95,12 +95,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | JOBS-01 | Phase 1 | Pending |
 | JOBS-02 | Phase 1 | Pending |
 | JOBS-03 | Phase 1 | Pending |
-| JOBS-04 | Phase 1 | Pending |
-| IPAD-01 | Phase 1 | Pending |
-| IPAD-02 | Phase 1 | Pending |
-| IPAD-03 | Phase 1 | Pending |
-| IPAD-04 | Phase 1 | Pending |
-| IPAD-05 | Phase 1 | Pending |
+| JOBS-04 | Phase 1 | Complete |
+| IPAD-01 | Phase 1 | Complete |
+| IPAD-02 | Phase 1 | Complete |
+| IPAD-03 | Phase 1 | Complete |
+| IPAD-04 | Phase 1 | Complete |
+| IPAD-05 | Phase 1 | Complete |
 | PHOT-01 | Phase 2 | Pending |
 | PHOT-02 | Phase 2 | Pending |
 | PHOT-03 | Phase 2 | Pending |
