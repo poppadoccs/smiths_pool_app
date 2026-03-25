@@ -48,7 +48,11 @@ Plans:
   3. Worker can view a thumbnail grid of all photos for a job and tap to enlarge
   4. Worker can delete a photo before submission
   5. Photos are compressed and converted to JPEG before upload — no HEIC files reach the server
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 02-01-PLAN.md — Install deps, shared types, Blob upload API route, server actions + tests
+- [ ] 02-02-PLAN.md — PhotoUpload, PhotoGallery, PhotoLightbox components, job detail page integration
+- [ ] 02-03-PLAN.md — Component unit tests and visual verification checkpoint
 **UI hint**: yes
 
 ### Phase 3: Form Renderer
@@ -105,8 +109,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation + Jobs | 0/3 | Planned | - |
-| 2. Photo Capture | 0/TBD | Not started | - |
+| 1. Foundation + Jobs | 3/3 | Complete | 2026-03-25 |
+| 2. Photo Capture | 0/3 | Planned | - |
 | 3. Form Renderer | 0/TBD | Not started | - |
 | 4. AI Form Generation | 0/TBD | Not started | - |
 | 5. Email Submission | 0/TBD | Not started | - |
