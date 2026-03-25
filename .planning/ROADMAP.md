@@ -50,7 +50,7 @@ Plans:
   5. Photos are compressed and converted to JPEG before upload — no HEIC files reach the server
 **Plans:** 3 plans
 Plans:
-- [ ] 02-01-PLAN.md — Install deps, shared types, Blob upload API route, server actions + tests
+- [x] 02-01-PLAN.md — Install deps, shared types, Blob upload API route, server actions + tests
 - [ ] 02-02-PLAN.md — PhotoUpload, PhotoGallery, PhotoLightbox components, job detail page integration
 - [ ] 02-03-PLAN.md — Component unit tests and visual verification checkpoint
 **UI hint**: yes

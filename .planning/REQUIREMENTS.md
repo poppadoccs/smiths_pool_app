@@ -19,9 +19,9 @@ Requirements for initial release. Each maps to roadmap phases.
 - [ ] **PHOT-01**: Worker can take photos using iPad camera within the app
 - [ ] **PHOT-02**: Worker can attach existing photos from iPad photo library
 - [ ] **PHOT-03**: Worker can view a photo gallery for each job (thumbnails, tap to enlarge)
-- [ ] **PHOT-04**: Worker can delete a photo from a job before submission
-- [ ] **PHOT-05**: Photos are compressed client-side before upload (iPad photos are 5-12MB)
-- [ ] **PHOT-06**: HEIC photos are converted to JPEG for Windows compatibility
+- [x] **PHOT-04**: Worker can delete a photo from a job before submission
+- [x] **PHOT-05**: Photos are compressed client-side before upload (iPad photos are 5-12MB)
+- [x] **PHOT-06**: HEIC photos are converted to JPEG for Windows compatibility
 
 ### Forms
 
@@ -104,9 +104,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PHOT-01 | Phase 2 | Pending |
 | PHOT-02 | Phase 2 | Pending |
 | PHOT-03 | Phase 2 | Pending |
-| PHOT-04 | Phase 2 | Pending |
-| PHOT-05 | Phase 2 | Pending |
-| PHOT-06 | Phase 2 | Pending |
+| PHOT-04 | Phase 2 | Complete |
+| PHOT-05 | Phase 2 | Complete |
+| PHOT-06 | Phase 2 | Complete |
 | FORM-01 | Phase 3 | Pending |
 | FORM-02 | Phase 3 | Pending |
 | FORM-03 | Phase 3 | Pending |
