@@ -1,0 +1,8 @@
+[     254ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://pool-field-forms.vercel.app/icon-192.png:0
+[     255ms] [WARNING] Error while trying to use the following icon from the Manifest: https://pool-field-forms.vercel.app/icon-192.png (Download error or resource isn't a valid image) @ https://pool-field-forms.vercel.app/admin:0
+[   28339ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://pool-field-forms.vercel.app/icon-192.png:0
+[   28340ms] [WARNING] Error while trying to use the following icon from the Manifest: https://pool-field-forms.vercel.app/icon-192.png (Download error or resource isn't a valid image) @ https://pool-field-forms.vercel.app/admin:0
+[   46667ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://pool-field-forms.vercel.app/icon-192.png:0
+[   46667ms] [WARNING] Error while trying to use the following icon from the Manifest: https://pool-field-forms.vercel.app/icon-192.png (Download error or resource isn't a valid image) @ https://pool-field-forms.vercel.app/admin:0
+[   64809ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://pool-field-forms.vercel.app/icon-192.png:0
+[   64810ms] [WARNING] Error while trying to use the following icon from the Manifest: https://pool-field-forms.vercel.app/icon-192.png (Download error or resource isn't a valid image) @ https://pool-field-forms.vercel.app/admin:0

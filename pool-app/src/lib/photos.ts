@@ -22,5 +22,5 @@ export const COMPRESSION_OPTIONS = {
   maxWidthOrHeight: 1920,
   initialQuality: 0.8,
   fileType: "image/jpeg" as const,
-  useWebWorker: true,
+  useWebWorker: false,
 };

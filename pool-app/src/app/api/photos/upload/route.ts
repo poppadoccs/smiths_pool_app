@@ -1,37 +1,34 @@
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
+import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const body = (await request.json()) as HandleUploadBody;
-
   try {
-    const jsonResponse = await handleUpload({
-      body,
-      request,
-      onBeforeGenerateToken: async (
-        _pathname,
-        _clientPayload,
-        _multipart
-      ) => {
-        // Only allow image types -- no HEIC should reach here (converted client-side)
-        return {
-          allowedContentTypes: ["image/jpeg", "image/png", "image/webp"],
-          maximumSizeInBytes: 5 * 1024 * 1024, // 5MB safety margin after compression
-          addRandomSuffix: true,
-        };
-      },
-      onUploadCompleted: async ({ blob }) => {
-        // NOTE: This callback does NOT work in local dev (Vercel cannot reach localhost).
-        // Database update is handled client-side via server action instead.
-        console.log("Upload completed:", blob.url);
-      },
+    const formData = await request.formData();
+    const file = formData.get("file") as File | null;
+    const filename = formData.get("filename") as string | null;
+
+    if (!file) {
+      return NextResponse.json({ error: "No file provided" }, { status: 400 });
+    }
+
+    console.log(
+      `[upload-route] Uploading ${filename || file.name} (${(file.size / 1024).toFixed(0)}KB, ${file.type})`
+    );
+
+    const blob = await put(filename || file.name, file, {
+      access: "public",
+      addRandomSuffix: true,
+      contentType: file.type || "image/jpeg",
     });
 
-    return NextResponse.json(jsonResponse);
+    console.log(`[upload-route] Uploaded: ${blob.url}`);
+
+    return NextResponse.json({ url: blob.url, size: file.size });
   } catch (error) {
+    console.error("[upload-route] Error:", (error as Error).message);
     return NextResponse.json(
       { error: (error as Error).message },
-      { status: 400 }
+      { status: 500 }
     );
   }
 }

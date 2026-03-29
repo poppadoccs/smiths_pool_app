@@ -10,6 +10,7 @@ datasource db {
 enum JobStatus {
   DRAFT
   SUBMITTED
+  ARCHIVED
 }
 
 model Job {
@@ -28,4 +29,12 @@ model Job {
 
   @@map("jobs")
   @@index([status, createdAt(sort: Desc)])
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("settings")
 }

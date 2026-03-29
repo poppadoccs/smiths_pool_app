@@ -6,8 +6,14 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { Separator } from "@/components/ui/separator";
 import { ArrowLeft } from "lucide-react";
-import { format } from "date-fns";
+import { LocalTime } from "@/components/local-time";
 import type { Metadata } from "next";
+import { PhotoUpload } from "@/components/photo-upload";
+import { PhotoGallery } from "@/components/photo-gallery";
+import type { PhotoMetadata } from "@/lib/photos";
+import { JobForm } from "@/components/job-form";
+import { SubmitSection } from "@/components/submit-section";
+import { DEFAULT_TEMPLATE, type FormData } from "@/lib/forms";
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -34,8 +40,10 @@ export default async function JobDetailPage({ params }: Props) {
     notFound();
   }
 
+  const isSubmitted = job.status === "SUBMITTED" || job.status === "ARCHIVED";
+
   return (
-    <main className="mx-auto max-w-2xl px-4 py-6">
+    <main className="mx-auto max-w-2xl px-4 pt-6 pb-16">
       <Link href="/">
         <Button
           variant="ghost"
@@ -57,7 +65,7 @@ export default async function JobDetailPage({ params }: Props) {
           <StatusBadge status={job.status} />
         </div>
         <p className="text-base text-zinc-500">
-          Created {format(job.createdAt, "PPP 'at' p")}
+          Created <LocalTime date={job.createdAt} />
         </p>
         {job.submittedBy && (
           <p className="text-base text-zinc-600">
@@ -70,22 +78,41 @@ export default async function JobDetailPage({ params }: Props) {
 
       <div className="space-y-4">
         <Card>
-          <CardContent className="p-4">
+          <CardContent className="p-4 space-y-4">
             <h2 className="text-lg font-semibold text-zinc-900">Photos</h2>
-            <p className="mt-1 text-base text-zinc-500">
-              Photo capture coming in Phase 2
-            </p>
+            <PhotoGallery
+              photos={job.photos as PhotoMetadata[]}
+              jobId={job.id}
+              readOnly={isSubmitted}
+            />
+            {!isSubmitted && (
+              <>
+                <Separator />
+                <PhotoUpload jobId={job.id} />
+              </>
+            )}
           </CardContent>
         </Card>
 
         <Card>
-          <CardContent className="p-4">
+          <CardContent className="p-4 space-y-4">
             <h2 className="text-lg font-semibold text-zinc-900">Form</h2>
-            <p className="mt-1 text-base text-zinc-500">
-              Form fields coming in Phase 3
-            </p>
+            <JobForm
+              jobId={job.id}
+              template={DEFAULT_TEMPLATE}
+              initialData={(job.formData as FormData) ?? null}
+              disabled={isSubmitted}
+            />
           </CardContent>
         </Card>
+
+        {!isSubmitted && (
+          <Card>
+            <CardContent className="p-4">
+              <SubmitSection jobId={job.id} />
+            </CardContent>
+          </Card>
+        )}
       </div>
     </main>
   );

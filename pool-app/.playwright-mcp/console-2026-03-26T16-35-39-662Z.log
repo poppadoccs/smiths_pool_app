@@ -1,0 +1,3 @@
+[     557ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://pool-field-forms.vercel.app/jobs/cmn7oyvpl0000g0s68f3awmm9:0
+[     732ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://pool-field-forms.vercel.app/icon-192.png:0
+[     732ms] [WARNING] Error while trying to use the following icon from the Manifest: https://pool-field-forms.vercel.app/icon-192.png (Download error or resource isn't a valid image) @ https://pool-field-forms.vercel.app/jobs/cmn7oyvpl0000g0s68f3awmm9:0

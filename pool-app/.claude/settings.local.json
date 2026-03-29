@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx:*)",
+      "mcp__plugin_playwright_playwright__browser_navigate",
+      "mcp__plugin_playwright_playwright__browser_fill_form",
+      "mcp__plugin_playwright_playwright__browser_snapshot",
+      "mcp__plugin_playwright_playwright__browser_click",
+      "Bash(cd:*)",
+      "Bash(node -e \":*)",
+      "Bash(rm scripts/seed-test.ts scripts/check-settings.ts)",
+      "Bash(rmdir scripts:*)",
+      "Bash(codex --version)",
+      "Bash(echo $OPENAI_API_KEY)",
+      "Bash(nslookup lucacllc.com)",
+      "Bash(dig lucacllc.com A +short)",
+      "Bash(curl:*)"
+    ]
+  }
+}
