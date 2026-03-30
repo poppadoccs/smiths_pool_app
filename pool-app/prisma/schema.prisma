@@ -23,6 +23,7 @@ model Setting {
 
 model FormTemplate {
   id          String   @id @default(cuid())
+  systemKey   String?  @unique @map("system_key")
   name        String
   description String?
   category    String?

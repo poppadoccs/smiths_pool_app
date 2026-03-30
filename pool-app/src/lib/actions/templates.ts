@@ -5,27 +5,28 @@ import { revalidatePath } from "next/cache";
 import type { Prisma } from "@/generated/prisma/client";
 import { DEFAULT_TEMPLATE, type FormField } from "@/lib/forms";
 
+const DEFAULT_SYSTEM_KEY = "default_pool_installation";
+
 /**
  * Ensures the hardcoded DEFAULT_TEMPLATE exists in the DB as a real record.
- * Idempotent — skips if any template with isDefault=true already exists.
+ * Concurrency-safe — upserts on a unique systemKey column so concurrent
+ * requests cannot create duplicates (Postgres unique constraint enforced).
  */
 export async function ensureDefaultTemplate() {
-  const existing = await db.formTemplate.findFirst({
-    where: { isDefault: true },
-    select: { id: true },
-  });
-  if (existing) return existing.id;
-
-  const created = await db.formTemplate.create({
-    data: {
+  const result = await db.formTemplate.upsert({
+    where: { systemKey: DEFAULT_SYSTEM_KEY },
+    update: {},
+    create: {
+      systemKey: DEFAULT_SYSTEM_KEY,
       name: DEFAULT_TEMPLATE.name,
       description: "Standard pool installation form",
       category: "Installation",
       fields: DEFAULT_TEMPLATE.fields as unknown as Prisma.InputJsonValue,
       isDefault: true,
     },
+    select: { id: true },
   });
-  return created.id;
+  return result.id;
 }
 
 export async function listTemplates() {
