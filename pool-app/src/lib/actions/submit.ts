@@ -3,7 +3,7 @@
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import { Resend } from "resend";
-import { DEFAULT_TEMPLATE, type FormData } from "@/lib/forms";
+import { DEFAULT_TEMPLATE, type FormData, type FormField, type FormTemplate } from "@/lib/forms";
 import type { PhotoMetadata } from "@/lib/photos";
 import { buildSubmissionEmail } from "@/lib/email";
 import { getRecipientEmail } from "@/lib/actions/settings";
@@ -16,8 +16,11 @@ export async function submitJob(
   jobId: string,
   submittedBy: string
 ): Promise<{ success: boolean; error?: string }> {
-  // 1. Load job
-  const job = await db.job.findUnique({ where: { id: jobId } });
+  // 1. Load job with template
+  const job = await db.job.findUnique({
+    where: { id: jobId },
+    include: { template: true },
+  });
   if (!job) return { success: false, error: "Job not found" };
 
   // 2. Prevent double-submit
@@ -31,8 +34,20 @@ export async function submitJob(
     return { success: false, error: "Please fill out the form before submitting" };
   }
 
+  // Resolve template: DB template or fallback to hardcoded default
+  const template: FormTemplate = job.template
+    ? {
+        id: job.template.id,
+        name: job.template.name,
+        version: 1,
+        fields: (job.template.fields as FormField[]).sort(
+          (a, b) => a.order - b.order
+        ),
+      }
+    : DEFAULT_TEMPLATE;
+
   // 4. Check required fields have values
-  const requiredFields = DEFAULT_TEMPLATE.fields.filter((f) => f.required);
+  const requiredFields = template.fields.filter((f) => f.required);
   const missingFields = requiredFields.filter((f) => {
     const value = formData[f.id];
     return value === undefined || value === "" || value === null;
@@ -56,7 +71,7 @@ export async function submitJob(
     jobNumber: job.jobNumber,
     submittedBy,
     formData,
-    template: DEFAULT_TEMPLATE,
+    template,
     photos,
   });
 

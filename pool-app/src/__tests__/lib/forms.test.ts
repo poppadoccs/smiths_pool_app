@@ -12,19 +12,20 @@ describe("buildFormSchema", () => {
     name: "Test Form",
     version: 1,
     fields: [
-      { id: "name", label: "Name", type: "text", required: true },
-      { id: "nickname", label: "Nickname", type: "text", required: false },
-      { id: "age", label: "Age", type: "number", required: true },
-      { id: "height", label: "Height", type: "number", required: false },
-      { id: "active", label: "Active", type: "checkbox", required: false },
+      { id: "name", label: "Name", type: "text", required: true, order: 0 },
+      { id: "nickname", label: "Nickname", type: "text", required: false, order: 1 },
+      { id: "age", label: "Age", type: "number", required: true, order: 2 },
+      { id: "height", label: "Height", type: "number", required: false, order: 3 },
+      { id: "active", label: "Active", type: "checkbox", required: false, order: 4 },
       {
         id: "color",
         label: "Color",
         type: "select",
         required: true,
         options: ["Red", "Blue"],
+        order: 5,
       },
-      { id: "bio", label: "Bio", type: "textarea", required: false },
+      { id: "bio", label: "Bio", type: "textarea", required: false, order: 6 },
     ],
   };
 
@@ -152,17 +153,18 @@ describe("getDefaultValues", () => {
     name: "Test",
     version: 1,
     fields: [
-      { id: "name", label: "Name", type: "text", required: true },
-      { id: "count", label: "Count", type: "number", required: false },
-      { id: "done", label: "Done", type: "checkbox", required: false },
+      { id: "name", label: "Name", type: "text", required: true, order: 0 },
+      { id: "count", label: "Count", type: "number", required: false, order: 1 },
+      { id: "done", label: "Done", type: "checkbox", required: false, order: 2 },
       {
         id: "kind",
         label: "Kind",
         type: "select",
         required: true,
         options: ["A", "B"],
+        order: 3,
       },
-      { id: "notes", label: "Notes", type: "textarea", required: false },
+      { id: "notes", label: "Notes", type: "textarea", required: false, order: 4 },
     ],
   };
 
@@ -199,9 +201,10 @@ describe("DEFAULT_TEMPLATE", () => {
     for (const field of DEFAULT_TEMPLATE.fields) {
       expect(field.id).toBeTruthy();
       expect(field.label).toBeTruthy();
-      expect(["text", "number", "checkbox", "select", "textarea"]).toContain(
-        field.type
-      );
+      expect([
+        "text", "number", "checkbox", "select", "textarea",
+        "date", "phone", "email", "radio", "signature",
+      ]).toContain(field.type);
     }
   });
 

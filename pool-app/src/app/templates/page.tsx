@@ -1,0 +1,107 @@
+import { db } from "@/lib/db";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import { ArrowLeft, Plus, ScanLine, FileText } from "lucide-react";
+import type { Metadata } from "next";
+import type { FormField } from "@/lib/forms";
+
+export const metadata: Metadata = {
+  title: "Templates | Pool Field Forms",
+};
+
+export const dynamic = "force-dynamic";
+
+export default async function TemplatesPage() {
+  const templates = await db.formTemplate.findMany({
+    orderBy: [{ isDefault: "desc" }, { updatedAt: "desc" }],
+    include: { _count: { select: { jobs: true } } },
+  });
+
+  return (
+    <main className="mx-auto max-w-2xl px-4 pt-6 pb-16">
+      <Link href="/">
+        <Button variant="ghost" className="min-h-[48px] gap-2 text-base">
+          <ArrowLeft className="size-5" />
+          Back to Jobs
+        </Button>
+      </Link>
+
+      <div className="mt-4 space-y-1">
+        <h1 className="text-2xl font-bold text-zinc-900">Form Templates</h1>
+        <p className="text-base text-zinc-500">
+          Create and manage reusable form templates.
+        </p>
+      </div>
+
+      {/* Action buttons */}
+      <div className="mt-6 flex gap-3">
+        <Link href="/templates/new" className="flex-1">
+          <Button className="w-full min-h-[52px] text-base gap-2">
+            <Plus className="size-5" />
+            New Template
+          </Button>
+        </Link>
+        <Link href="/templates/scan" className="flex-1">
+          <Button
+            variant="outline"
+            className="w-full min-h-[52px] text-base gap-2"
+          >
+            <ScanLine className="size-5" />
+            Scan Form
+          </Button>
+        </Link>
+      </div>
+
+      <Separator className="my-6" />
+
+      {/* Template list */}
+      {templates.length === 0 ? (
+        <div className="py-12 text-center">
+          <FileText className="mx-auto size-12 text-zinc-300" />
+          <p className="mt-3 text-base text-zinc-500">No templates yet.</p>
+          <p className="text-sm text-zinc-400">
+            Create one manually or scan a paper form.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {templates.map((tpl) => {
+            const fieldCount = (tpl.fields as FormField[]).length;
+            return (
+              <Link key={tpl.id} href={`/templates/${tpl.id}/edit`}>
+                <Card className="transition-colors active:bg-zinc-100">
+                  <CardContent className="flex items-center justify-between p-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-lg font-medium text-zinc-900">
+                          {tpl.name}
+                        </p>
+                        {tpl.isDefault && (
+                          <span className="shrink-0 rounded bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-600">
+                            Default
+                          </span>
+                        )}
+                      </div>
+                      {tpl.description && (
+                        <p className="truncate text-sm text-zinc-500">
+                          {tpl.description}
+                        </p>
+                      )}
+                      <p className="text-sm text-zinc-400">
+                        {fieldCount} field{fieldCount !== 1 ? "s" : ""}
+                        {tpl._count.jobs > 0 &&
+                          ` · ${tpl._count.jobs} job${tpl._count.jobs !== 1 ? "s" : ""}`}
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              </Link>
+            );
+          })}
+        </div>
+      )}
+    </main>
+  );
+}

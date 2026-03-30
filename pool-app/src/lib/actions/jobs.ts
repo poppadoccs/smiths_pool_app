@@ -17,11 +17,17 @@ export async function createJob(prevState: unknown, formData: FormData) {
     return { error: parsed.error.flatten().formErrors.join(", ") };
   }
 
+  const rawTemplateId = formData.get("templateId");
+  const templateId = typeof rawTemplateId === "string" && rawTemplateId.trim()
+    ? rawTemplateId.trim()
+    : null;
+
   await db.job.create({
     data: {
       name: parsed.data.name ?? null,
       jobNumber: parsed.data.jobNumber ?? null,
       status: "DRAFT",
+      ...(templateId && { templateId }),
     },
   });
 

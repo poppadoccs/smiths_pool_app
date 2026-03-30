@@ -196,6 +196,9 @@ function FieldRenderer({
   switch (field.type) {
     case "text":
     case "number":
+    case "phone":
+    case "email":
+    case "date":
       return (
         <div className="space-y-1.5">
           <Label htmlFor={fieldId} className="text-base">
@@ -204,10 +207,38 @@ function FieldRenderer({
           </Label>
           <Input
             id={fieldId}
-            type={field.type === "number" ? "text" : "text"}
-            inputMode={field.type === "number" ? "decimal" : "text"}
+            type={field.type === "date" ? "date" : "text"}
+            inputMode={
+              field.type === "number"
+                ? "decimal"
+                : field.type === "phone"
+                  ? "tel"
+                  : field.type === "email"
+                    ? "email"
+                    : "text"
+            }
             placeholder={field.placeholder}
             className="min-h-[48px] text-base"
+            aria-invalid={!!error}
+            disabled={disabled}
+            {...register(field.id)}
+          />
+          {error && <p className="text-sm text-red-600">{error}</p>}
+        </div>
+      );
+
+    case "signature":
+      return (
+        <div className="space-y-1.5">
+          <Label htmlFor={fieldId} className="text-base">
+            {field.label}
+            {field.required && <span className="text-red-500 ml-0.5">*</span>}
+          </Label>
+          <Input
+            id={fieldId}
+            type="text"
+            placeholder={field.placeholder || "Type name as signature"}
+            className="min-h-[48px] text-base italic"
             aria-invalid={!!error}
             disabled={disabled}
             {...register(field.id)}
@@ -290,6 +321,44 @@ function FieldRenderer({
                   ))}
                 </SelectContent>
               </Select>
+              {error && <p className="text-sm text-red-600">{error}</p>}
+            </div>
+          )}
+        />
+      );
+
+    case "radio":
+      return (
+        <Controller
+          name={field.id}
+          control={control}
+          render={({ field: rhf }) => (
+            <div className="space-y-2">
+              <Label className="text-base">
+                {field.label}
+                {field.required && (
+                  <span className="text-red-500 ml-0.5">*</span>
+                )}
+              </Label>
+              <div className="space-y-1">
+                {field.options?.map((opt) => (
+                  <label
+                    key={opt}
+                    className="flex items-center gap-3 min-h-[44px] cursor-pointer"
+                  >
+                    <input
+                      type="radio"
+                      name={field.id}
+                      value={opt}
+                      checked={rhf.value === opt}
+                      onChange={() => rhf.onChange(opt)}
+                      disabled={disabled}
+                      className="size-5 accent-zinc-900"
+                    />
+                    <span className="text-base">{opt}</span>
+                  </label>
+                ))}
+              </div>
               {error && <p className="text-sm text-red-600">{error}</p>}
             </div>
           )}

@@ -13,6 +13,30 @@ enum JobStatus {
   ARCHIVED
 }
 
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("settings")
+}
+
+model FormTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  category    String?
+  fields      Json     @default("[]")
+  isDefault   Boolean  @default(false) @map("is_default")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  jobs Job[]
+
+  @@map("form_templates")
+}
+
 model Job {
   id          String    @id @default(cuid())
   name        String?
@@ -24,17 +48,12 @@ model Job {
   photos   Json  @default("[]")
   formData Json? @map("form_data")
 
+  templateId String?       @map("template_id")
+  template   FormTemplate? @relation(fields: [templateId], references: [id])
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("jobs")
   @@index([status, createdAt(sort: Desc)])
-}
-
-model Setting {
-  key       String   @id
-  value     String
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  @@map("settings")
 }

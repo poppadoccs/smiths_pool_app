@@ -2,15 +2,40 @@ import { z } from "zod";
 
 // --- Field types supported by the form renderer ---
 
-export type FieldType = "text" | "number" | "checkbox" | "select" | "textarea";
+export type FieldType =
+  | "text"
+  | "number"
+  | "checkbox"
+  | "select"
+  | "textarea"
+  | "date"
+  | "phone"
+  | "email"
+  | "radio"
+  | "signature";
+
+export const FIELD_TYPES: { value: FieldType; label: string }[] = [
+  { value: "text", label: "Text" },
+  { value: "textarea", label: "Long Text" },
+  { value: "number", label: "Number" },
+  { value: "date", label: "Date" },
+  { value: "checkbox", label: "Checkbox" },
+  { value: "radio", label: "Radio (pick one)" },
+  { value: "select", label: "Dropdown" },
+  { value: "phone", label: "Phone" },
+  { value: "email", label: "Email" },
+  { value: "signature", label: "Signature" },
+];
 
 export type FormField = {
   id: string; // stable key, used in formData JSON and localStorage
   label: string;
   type: FieldType;
   required: boolean;
-  placeholder?: string; // text, number, textarea
-  options?: string[]; // select only
+  placeholder?: string; // text, number, textarea, phone, email
+  options?: string[]; // select, radio
+  section?: string; // group heading
+  order: number;
 };
 
 export type FormTemplate = {
@@ -33,6 +58,35 @@ export function buildFormSchema(template: FormTemplate) {
     switch (field.type) {
       case "text":
       case "textarea":
+      case "signature":
+        shape[field.id] = field.required
+          ? z.string().min(1, `${field.label} is required`)
+          : z.string();
+        break;
+
+      case "phone":
+        shape[field.id] = field.required
+          ? z.string().min(1, `${field.label} is required`)
+          : z.string();
+        break;
+
+      case "email":
+        if (field.required) {
+          shape[field.id] = z
+            .string()
+            .min(1, `${field.label} is required`)
+            .email(`${field.label} must be a valid email`);
+        } else {
+          shape[field.id] = z
+            .string()
+            .refine(
+              (val) => val === "" || z.string().email().safeParse(val).success,
+              { message: `${field.label} must be a valid email` }
+            );
+        }
+        break;
+
+      case "date":
         shape[field.id] = field.required
           ? z.string().min(1, `${field.label} is required`)
           : z.string();
@@ -45,7 +99,6 @@ export function buildFormSchema(template: FormTemplate) {
             .min(1, `${field.label} is required`)
             .regex(/^\d+\.?\d*$/, `${field.label} must be a number`);
         } else {
-          // Allow empty string or valid number
           shape[field.id] = z
             .string()
             .regex(/^(\d+\.?\d*)?$/, `${field.label} must be a number`);
@@ -57,6 +110,7 @@ export function buildFormSchema(template: FormTemplate) {
         break;
 
       case "select":
+      case "radio":
         if (field.required) {
           shape[field.id] = z.string().min(1, `${field.label} is required`);
         } else {
@@ -86,99 +140,18 @@ export const DEFAULT_TEMPLATE: FormTemplate = {
   name: "Pool Installation",
   version: 1,
   fields: [
-    {
-      id: "customer_name",
-      label: "Customer Name",
-      type: "text",
-      required: true,
-      placeholder: "e.g., John Smith",
-    },
-    {
-      id: "address",
-      label: "Job Address",
-      type: "text",
-      required: true,
-      placeholder: "e.g., 123 Main St, Anytown",
-    },
-    {
-      id: "pool_type",
-      label: "Pool Type",
-      type: "select",
-      required: true,
-      options: ["Inground", "Above Ground", "Semi-Inground"],
-    },
-    {
-      id: "pool_shape",
-      label: "Pool Shape",
-      type: "select",
-      required: false,
-      options: [
-        "Rectangular",
-        "Oval",
-        "Round",
-        "Freeform",
-        "L-Shaped",
-        "Kidney",
-      ],
-    },
-    {
-      id: "length",
-      label: "Length (ft)",
-      type: "number",
-      required: true,
-      placeholder: "e.g., 32",
-    },
-    {
-      id: "width",
-      label: "Width (ft)",
-      type: "number",
-      required: true,
-      placeholder: "e.g., 16",
-    },
-    {
-      id: "depth_shallow",
-      label: "Depth - Shallow End (ft)",
-      type: "number",
-      required: false,
-      placeholder: "e.g., 3.5",
-    },
-    {
-      id: "depth_deep",
-      label: "Depth - Deep End (ft)",
-      type: "number",
-      required: false,
-      placeholder: "e.g., 8",
-    },
-    {
-      id: "has_pump",
-      label: "Pump Installed",
-      type: "checkbox",
-      required: false,
-    },
-    {
-      id: "has_filter",
-      label: "Filter Installed",
-      type: "checkbox",
-      required: false,
-    },
-    {
-      id: "has_heater",
-      label: "Heater Installed",
-      type: "checkbox",
-      required: false,
-    },
-    {
-      id: "has_lights",
-      label: "Lights Installed",
-      type: "checkbox",
-      required: false,
-    },
-    {
-      id: "notes",
-      label: "Notes",
-      type: "textarea",
-      required: false,
-      placeholder: "Any additional details about the installation...",
-    },
+    { id: "customer_name", label: "Customer Name", type: "text", required: true, placeholder: "e.g., John Smith", order: 0 },
+    { id: "address", label: "Job Address", type: "text", required: true, placeholder: "e.g., 123 Main St, Anytown", order: 1 },
+    { id: "pool_type", label: "Pool Type", type: "select", required: true, options: ["Inground", "Above Ground", "Semi-Inground"], order: 2 },
+    { id: "pool_shape", label: "Pool Shape", type: "select", required: false, options: ["Rectangular", "Oval", "Round", "Freeform", "L-Shaped", "Kidney"], order: 3 },
+    { id: "length", label: "Length (ft)", type: "number", required: true, placeholder: "e.g., 32", order: 4 },
+    { id: "width", label: "Width (ft)", type: "number", required: true, placeholder: "e.g., 16", order: 5 },
+    { id: "depth_shallow", label: "Depth - Shallow End (ft)", type: "number", required: false, placeholder: "e.g., 3.5", order: 6 },
+    { id: "depth_deep", label: "Depth - Deep End (ft)", type: "number", required: false, placeholder: "e.g., 8", order: 7 },
+    { id: "has_pump", label: "Pump Installed", type: "checkbox", required: false, order: 8 },
+    { id: "has_filter", label: "Filter Installed", type: "checkbox", required: false, order: 9 },
+    { id: "has_heater", label: "Heater Installed", type: "checkbox", required: false, order: 10 },
+    { id: "has_lights", label: "Lights Installed", type: "checkbox", required: false, order: 11 },
+    { id: "notes", label: "Notes", type: "textarea", required: false, placeholder: "Any additional details about the installation...", order: 12 },
   ],
 };

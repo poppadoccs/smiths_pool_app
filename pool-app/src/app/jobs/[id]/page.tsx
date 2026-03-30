@@ -13,7 +13,7 @@ import { PhotoGallery } from "@/components/photo-gallery";
 import type { PhotoMetadata } from "@/lib/photos";
 import { JobForm } from "@/components/job-form";
 import { SubmitSection } from "@/components/submit-section";
-import { DEFAULT_TEMPLATE, type FormData } from "@/lib/forms";
+import { DEFAULT_TEMPLATE, type FormData, type FormField, type FormTemplate } from "@/lib/forms";
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -34,13 +34,28 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function JobDetailPage({ params }: Props) {
   const { id } = await params;
-  const job = await db.job.findUnique({ where: { id } });
+  const job = await db.job.findUnique({
+    where: { id },
+    include: { template: true },
+  });
 
   if (!job) {
     notFound();
   }
 
   const isSubmitted = job.status === "SUBMITTED" || job.status === "ARCHIVED";
+
+  // Use the linked template from DB, or fall back to DEFAULT_TEMPLATE
+  const template: FormTemplate = job.template
+    ? {
+        id: job.template.id,
+        name: job.template.name,
+        version: 1,
+        fields: (job.template.fields as FormField[]).sort(
+          (a, b) => a.order - b.order
+        ),
+      }
+    : DEFAULT_TEMPLATE;
 
   return (
     <main className="mx-auto max-w-2xl px-4 pt-6 pb-16">
@@ -99,7 +114,7 @@ export default async function JobDetailPage({ params }: Props) {
             <h2 className="text-lg font-semibold text-zinc-900">Form</h2>
             <JobForm
               jobId={job.id}
-              template={DEFAULT_TEMPLATE}
+              template={template}
               initialData={(job.formData as FormData) ?? null}
               disabled={isSubmitted}
             />

@@ -154,7 +154,9 @@ An iPad app for pool installation crews that replaces paper job forms with a dig
 <!-- GSD:conventions-start source:CONVENTIONS.md -->
 ## Conventions
 
-Conventions not yet established. Will populate as patterns emerge during development.
+### Database
+- **Current Neon DB**: use `npx prisma db push` only. Never run `prisma migrate dev` or `prisma migrate reset` against it.
+- Leave existing migrations alone. We can set up a separate dev database later for clean migration workflow.
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
@@ -177,6 +179,10 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 <!-- GSD:workflow-end -->
 
 
+
+## Codex Review
+
+After completing a feature, bug fix, or significant code change, use the `codex` skill in read-only mode to review the work before considering it done. Use model `gpt-5.4`, reasoning effort `high`, and sandbox `read-only`. Summarize any issues Codex finds and address them before marking the task complete.
 
 <!-- GSD:profile-start -->
 ## Developer Profile
