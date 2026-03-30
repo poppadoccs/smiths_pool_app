@@ -1,11 +1,11 @@
 import { db } from "@/lib/db";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { ArrowLeft, Plus, ScanLine, FileText } from "lucide-react";
 import type { Metadata } from "next";
 import type { FormField } from "@/lib/forms";
+import { TemplateCard } from "@/components/template-card";
 
 export const metadata: Metadata = {
   title: "Templates | Pool Field Forms",
@@ -67,39 +67,17 @@ export default async function TemplatesPage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {templates.map((tpl) => {
-            const fieldCount = (tpl.fields as FormField[]).length;
-            return (
-              <Link key={tpl.id} href={`/templates/${tpl.id}/edit`}>
-                <Card className="transition-colors active:bg-zinc-100">
-                  <CardContent className="flex items-center justify-between p-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <p className="truncate text-lg font-medium text-zinc-900">
-                          {tpl.name}
-                        </p>
-                        {tpl.isDefault && (
-                          <span className="shrink-0 rounded bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-600">
-                            Default
-                          </span>
-                        )}
-                      </div>
-                      {tpl.description && (
-                        <p className="truncate text-sm text-zinc-500">
-                          {tpl.description}
-                        </p>
-                      )}
-                      <p className="text-sm text-zinc-400">
-                        {fieldCount} field{fieldCount !== 1 ? "s" : ""}
-                        {tpl._count.jobs > 0 &&
-                          ` · ${tpl._count.jobs} job${tpl._count.jobs !== 1 ? "s" : ""}`}
-                      </p>
-                    </div>
-                  </CardContent>
-                </Card>
-              </Link>
-            );
-          })}
+          {templates.map((tpl) => (
+            <TemplateCard
+              key={tpl.id}
+              id={tpl.id}
+              name={tpl.name}
+              description={tpl.description}
+              isDefault={tpl.isDefault}
+              fieldCount={(tpl.fields as FormField[]).length}
+              jobCount={tpl._count.jobs}
+            />
+          ))}
         </div>
       )}
     </main>

@@ -128,3 +128,22 @@ export async function deleteTemplate(
   revalidatePath("/templates");
   return { success: true };
 }
+
+export async function duplicateTemplate(
+  id: string
+): Promise<{ success: boolean; id?: string; error?: string }> {
+  const existing = await db.formTemplate.findUnique({ where: { id } });
+  if (!existing) return { success: false, error: "Template not found" };
+
+  const copy = await db.formTemplate.create({
+    data: {
+      name: `${existing.name} (Copy)`,
+      description: existing.description,
+      category: existing.category,
+      fields: existing.fields as unknown as Prisma.InputJsonValue,
+    },
+  });
+
+  revalidatePath("/templates");
+  return { success: true, id: copy.id };
+}
