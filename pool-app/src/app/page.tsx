@@ -4,10 +4,14 @@ import { JobList } from "@/components/job-list";
 import { CreateJobForm } from "@/components/create-job-form";
 import { Separator } from "@/components/ui/separator";
 import { Settings, FileText } from "lucide-react";
+import { ensureDefaultTemplate } from "@/lib/actions/templates";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
+  // Seed the default template on first visit (idempotent)
+  await ensureDefaultTemplate();
+
   const [jobs, templates] = await Promise.all([
     db.job.findMany({
       where: { status: { not: "ARCHIVED" } },

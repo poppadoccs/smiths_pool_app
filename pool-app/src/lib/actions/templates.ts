@@ -3,7 +3,30 @@
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import type { Prisma } from "@/generated/prisma/client";
-import type { FormField } from "@/lib/forms";
+import { DEFAULT_TEMPLATE, type FormField } from "@/lib/forms";
+
+/**
+ * Ensures the hardcoded DEFAULT_TEMPLATE exists in the DB as a real record.
+ * Idempotent — skips if any template with isDefault=true already exists.
+ */
+export async function ensureDefaultTemplate() {
+  const existing = await db.formTemplate.findFirst({
+    where: { isDefault: true },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+
+  const created = await db.formTemplate.create({
+    data: {
+      name: DEFAULT_TEMPLATE.name,
+      description: "Standard pool installation form",
+      category: "Installation",
+      fields: DEFAULT_TEMPLATE.fields as unknown as Prisma.InputJsonValue,
+      isDefault: true,
+    },
+  });
+  return created.id;
+}
 
 export async function listTemplates() {
   return db.formTemplate.findMany({
