@@ -79,6 +79,12 @@ export type ScanResult = {
   error?: string;
 };
 
+export type PageScanResult = {
+  success: boolean;
+  fields: FormField[];
+  error?: string;
+};
+
 const SYSTEM_PROMPT = `You are a form structure extractor. You analyze photos of blank paper forms and extract their structure into a digital template.
 
 Rules:
@@ -93,6 +99,8 @@ Rules:
 - Set confidence based on how clearly you can read the field (1.0 = crystal clear, 0.5 = somewhat readable)
 - Do NOT make up fields that aren't on the form
 - Do NOT include page numbers, form numbers, or decorative elements as fields`;
+
+const PAGE_TIMEOUT_MS = 30_000;
 
 // --- Model resolution: Gemini → Ollama → Mock ---
 
@@ -118,12 +126,10 @@ async function isOllamaRunning(): Promise<boolean> {
 async function resolveModel(): Promise<ResolvedModel> {
   if (process.env.USE_MOCK_FORM_SCAN === "true") return null;
 
-  // 1. Gemini (cloud, fast)
   if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-    return { model: google("gemini-2.0-flash"), provider: "gemini" };
+    return { model: google("gemini-2.5-flash-lite"), provider: "gemini" };
   }
 
-  // 2. Ollama (local, free)
   if (await isOllamaRunning()) {
     const ollama = createOpenAI({
       baseURL: `${OLLAMA_BASE}/v1`,
@@ -132,16 +138,15 @@ async function resolveModel(): Promise<ResolvedModel> {
     return { model: ollama(OLLAMA_MODEL), provider: "ollama" };
   }
 
-  // 3. Mock
   return null;
 }
 
-/** Exposed so the scan page can show the mock banner */
 export async function isMockMode(): Promise<boolean> {
   return (await resolveModel()) === null;
 }
 
-/** Validate and sanitize extracted fields server-side before returning */
+// --- Validation ---
+
 function validateExtractedFields(raw: ExtractedTemplate): FormField[] {
   const validTypes = new Set(FIELD_TYPE_VALUES);
 
@@ -165,35 +170,21 @@ function validateExtractedFields(raw: ExtractedTemplate): FormField[] {
     }));
 }
 
-export async function extractFormTemplate(
+// --- Core extraction (single image, with timeout) ---
+
+async function extractSingleImage(
+  resolved: ResolvedModel & {},
   imageBase64: string,
-  mimeType: string = "image/jpeg"
-): Promise<ScanResult> {
-  // Resolve which AI provider to use
-  const resolved = await resolveModel();
+  mimeType: string
+): Promise<{ extracted: ExtractedTemplate | null; error?: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PAGE_TIMEOUT_MS);
 
-  // --- MOCK MODE: return realistic sample data, zero cost ---
-  if (!resolved) {
-    await new Promise((r) => setTimeout(r, 1500));
-
-    const mock = getRandomMockTemplate();
-    return {
-      success: true,
-      mock: true,
-      template: {
-        name: mock.name,
-        description: mock.description,
-        category: mock.category,
-        fields: mock.fields,
-      },
-    };
-  }
-
-  // --- REAL AI MODE (Gemini or Ollama) ---
   try {
     const result = await generateText({
       model: resolved.model,
       output: Output.object({ schema: ExtractedTemplateSchema }),
+      abortSignal: controller.signal,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         {
@@ -213,37 +204,213 @@ export async function extractFormTemplate(
       ],
     });
 
-    const extracted = result.output as ExtractedTemplate | undefined;
-    if (!extracted || !extracted.fields || extracted.fields.length === 0) {
-      return {
-        success: false,
-        error: "Could not extract any fields from this image. Try a clearer photo.",
-      };
+    return { extracted: result.output as ExtractedTemplate | null };
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      return { extracted: null, error: "timeout" };
     }
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return { extracted: null, error: message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-    // Server-side validation of AI response
-    const fields = validateExtractedFields(extracted);
-    if (fields.length === 0) {
-      return {
-        success: false,
-        error: "AI returned fields but none were valid. Try a clearer photo.",
-      };
+// --- Core extraction (PDF, with timeout) ---
+
+async function extractPdf(
+  resolved: ResolvedModel & {},
+  pdfBase64: string
+): Promise<{ extracted: ExtractedTemplate | null; error?: string }> {
+  const controller = new AbortController();
+  // PDFs get more time — up to 60s
+  const timer = setTimeout(() => controller.abort(), PAGE_TIMEOUT_MS * 2);
+
+  try {
+    const result = await generateText({
+      model: resolved.model,
+      output: Output.object({ schema: ExtractedTemplateSchema }),
+      abortSignal: controller.signal,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Extract the structure of this blank paper form into a digital template. This PDF may have multiple pages. Return ALL fields from ALL pages in order.",
+            },
+            {
+              type: "file",
+              data: pdfBase64,
+              mediaType: "application/pdf",
+            },
+          ],
+        },
+      ],
+    });
+
+    return { extracted: result.output as ExtractedTemplate | null };
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      return { extracted: null, error: "timeout" };
     }
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return { extracted: null, error: message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
+// --- Public: single-page fast path ---
+
+export async function extractFormTemplate(
+  imageBase64: string,
+  mimeType: string = "image/jpeg"
+): Promise<ScanResult> {
+  const resolved = await resolveModel();
+
+  if (!resolved) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const mock = getRandomMockTemplate();
     return {
       success: true,
+      mock: true,
       template: {
-        name: (extracted.name || "Untitled Form").slice(0, 200),
-        description: (extracted.description || "").slice(0, 500),
-        category: (extracted.category || "").slice(0, 100),
-        fields,
+        name: mock.name,
+        description: mock.description,
+        category: mock.category,
+        fields: mock.fields,
       },
     };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
+  }
+
+  const { extracted, error } = await extractSingleImage(
+    resolved,
+    imageBase64,
+    mimeType
+  );
+
+  if (error === "timeout") {
     return {
       success: false,
-      error: `AI extraction failed: ${message}`,
+      error: "Scan timed out after 30 seconds. Try a clearer photo or upload as PDF.",
     };
   }
+  if (error) {
+    return { success: false, error: `AI extraction failed: ${error}` };
+  }
+  if (!extracted || !extracted.fields || extracted.fields.length === 0) {
+    return {
+      success: false,
+      error: "Could not extract any fields from this image. Try a clearer photo.",
+    };
+  }
+
+  const fields = validateExtractedFields(extracted);
+  if (fields.length === 0) {
+    return {
+      success: false,
+      error: "AI returned fields but none were valid. Try a clearer photo.",
+    };
+  }
+
+  return {
+    success: true,
+    template: {
+      name: (extracted.name || "Untitled Form").slice(0, 200),
+      description: (extracted.description || "").slice(0, 500),
+      category: (extracted.category || "").slice(0, 100),
+      fields,
+    },
+  };
+}
+
+// --- Public: single page scan (for multi-page progress tracking) ---
+
+export async function extractSinglePage(
+  imageBase64: string,
+  mimeType: string = "image/jpeg"
+): Promise<PageScanResult> {
+  const resolved = await resolveModel();
+  if (!resolved) {
+    return { success: false, fields: [], error: "No AI provider available" };
+  }
+
+  const { extracted, error } = await extractSingleImage(
+    resolved,
+    imageBase64,
+    mimeType
+  );
+
+  if (error === "timeout") {
+    return { success: false, fields: [], error: "timeout" };
+  }
+  if (error) {
+    return { success: false, fields: [], error };
+  }
+  if (!extracted || !extracted.fields || extracted.fields.length === 0) {
+    return { success: false, fields: [], error: "No fields found on this page" };
+  }
+
+  return { success: true, fields: validateExtractedFields(extracted) };
+}
+
+// --- Public: PDF extraction ---
+
+export async function extractFormFromPdf(
+  pdfBase64: string
+): Promise<ScanResult> {
+  const resolved = await resolveModel();
+
+  if (!resolved) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const mock = getRandomMockTemplate();
+    return {
+      success: true,
+      mock: true,
+      template: {
+        name: mock.name,
+        description: mock.description,
+        category: mock.category,
+        fields: mock.fields,
+      },
+    };
+  }
+
+  const { extracted, error } = await extractPdf(resolved, pdfBase64);
+
+  if (error === "timeout") {
+    return {
+      success: false,
+      error: "PDF scan timed out after 60 seconds. Try uploading individual page photos instead.",
+    };
+  }
+  if (error) {
+    return { success: false, error: `AI extraction failed: ${error}` };
+  }
+  if (!extracted || !extracted.fields || extracted.fields.length === 0) {
+    return {
+      success: false,
+      error: "Could not extract any fields from this PDF.",
+    };
+  }
+
+  const fields = validateExtractedFields(extracted);
+  if (fields.length === 0) {
+    return {
+      success: false,
+      error: "AI returned fields but none were valid.",
+    };
+  }
+
+  return {
+    success: true,
+    template: {
+      name: (extracted.name || "Untitled Form").slice(0, 200),
+      description: (extracted.description || "").slice(0, 500),
+      category: (extracted.category || "").slice(0, 100),
+      fields,
+    },
+  };
 }
