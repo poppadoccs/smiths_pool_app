@@ -677,17 +677,9 @@ function mergeCompoundFields(fields: RawField[]): RawField[] {
           const childText = stripNumbering(child.label);
           const existingSub = leadingSub(child.label)!;
 
-          const parentFirstWord = parentText.split(" ")[0].toLowerCase();
-          const alreadyHasContext =
-            childText.toLowerCase().includes(parentFirstWord);
-
-          const contextLabel = alreadyHasContext
-            ? `${parentNum}${existingSub}. ${childText}`
-            : `${parentNum}${existingSub}. ${parentText} — ${childText}`;
-
           result.push({
             ...child,
-            label: contextLabel,
+            label: `${parentNum}${existingSub}. ${childText}`,
             section: parentSection, // Force parent section — AI assignment unreliable
           });
         }
@@ -843,6 +835,55 @@ function fixChildSections(fields: RawField[]): RawField[] {
   });
 }
 
+// --- Pass 5c: Clean child labels — strip repeated parent text ---
+//
+// If a child label starts with or contains the parent's text, strip it
+// for cleaner display. Examples:
+//   "4a. Setbacks House" → "4a. House"     (parent prefix stripped)
+//   "20a. Sun Shelf Depth" → "20a. Depth"  (parent prefix stripped)
+//   "4a. House Setback" → "4a. House"      (parent word stripped from end)
+
+function cleanChildLabels(fields: RawField[]): RawField[] {
+  // Build map of parent number → parent stripped text
+  const parentTexts = new Map<number, string>();
+  for (const f of fields) {
+    const num = leadingNumber(f.label);
+    const sub = leadingSub(f.label);
+    if (num !== null && sub === null) {
+      parentTexts.set(num, stripNumbering(f.label));
+    }
+  }
+
+  return fields.map(f => {
+    const num = leadingNumber(f.label);
+    const sub = leadingSub(f.label);
+    if (num === null || sub === null) return f;
+
+    const parentText = parentTexts.get(num);
+    if (!parentText) return f;
+
+    const childText = stripNumbering(f.label);
+    let clean = childText;
+
+    // Strip parent text from beginning (e.g., "Setbacks House" → "House")
+    if (clean.toLowerCase().startsWith(parentText.toLowerCase())) {
+      clean = clean.slice(parentText.length).replace(/^[-—–,\s]+/, "").trim();
+    }
+
+    // Strip parent words from end (e.g., "House Setback" → "House")
+    for (const pw of parentText.toLowerCase().split(/\s+/).filter(w => w.length > 2)) {
+      const base = pw.replace(/s$/, "");
+      clean = clean.replace(new RegExp(`\\s+${base}s?$`, 'i'), "").trim();
+    }
+
+    // Fallback to original if stripping left nothing
+    if (!clean) return f;
+    if (clean === childText) return f;
+
+    return { ...f, label: `${num}${sub}. ${clean}` };
+  });
+}
+
 // --- Pass 6: Final sanitization — dedupe IDs, validate types, assign order ---
 
 function sanitizeFields(fields: RawField[]): FormField[] {
@@ -908,9 +949,10 @@ function normalizeExtractedFields(raw: ExtractedTemplate): FormField[] {
   fields = dropFakeChildren(fields);                   // 4. kill unit/dupe children, keep real ones (4a/4b/4c)
   fields = mergeCompoundFields(fields);                // 5. group ≥2 children under parent + dimension collapse
   fields = fixChildSections(fields);                   // 6. ensure children share parent's section
-  fields = repairCheckboxes(fields);                   // 7. fix empty checkboxes
-  fields = extractHelperText(fields);                  // 8. notes → placeholders
-  fields = fixNumbering(fields);                       // 9. sort by number (children under parent)
+  fields = cleanChildLabels(fields);                   // 7. strip repeated parent text from child labels
+  fields = repairCheckboxes(fields);                   // 8. fix empty checkboxes
+  fields = extractHelperText(fields);                  // 9. notes → placeholders
+  fields = fixNumbering(fields);                       // 10. sort by number (children under parent)
 
   const result = sanitizeFields(fields);               // 6. dedupe + validate
 
