@@ -221,11 +221,15 @@ function dropSectionHeaderFields(
   });
 }
 
-// --- Pass 2: Merge compound/grouped fields ---
-// Handles:
-//   "1. Total Yard Dimensions" + children → parent label on children
-//   "4. Setbacks" + sub-items House/Property Line/Fence → grouped under parent
-//   Parent numbered "1.", children "1a.", "1b." or unnumbered adjacent children
+// --- Pass 2: Merge compound/grouped fields (conservative) ---
+//
+// ONLY merges when the AI already produced explicit sub-numbered children:
+//   "1. Total Yard Dimensions" + "1a. Length" + "1b. Width"
+//   → children get contextual labels like "1a. Total Yard Dimensions — Length"
+//
+// Does NOT split or create new fields from single fields.
+// Does NOT treat "(ft)", "(sq ft)", "(gallons)" as split signals.
+// A field like "10. Length (Overall):" stays as ONE field.
 
 function mergeCompoundFields(fields: RawField[]): RawField[] {
   const result: RawField[] = [];
@@ -236,12 +240,12 @@ function mergeCompoundFields(fields: RawField[]): RawField[] {
     const parentNum = leadingNumber(field.label);
     const parentSub = leadingSub(field.label);
 
-    // Only consider numbered parents WITHOUT a sub-letter (e.g., "1." not "1a.")
+    // Only consider numbered parents WITHOUT a sub-letter
     if (parentNum !== null && parentSub === null) {
       const parentText = stripNumbering(field.label);
       const parentSection = field.section;
 
-      // Look ahead: collect children that belong to this parent
+      // Look ahead ONLY for explicit sub-numbered children: "1a.", "1b.", etc.
       const children: RawField[] = [];
       let j = i + 1;
 
@@ -249,54 +253,34 @@ function mergeCompoundFields(fields: RawField[]): RawField[] {
         const child = fields[j];
         const childNum = leadingNumber(child.label);
         const childSub = leadingSub(child.label);
-        const childSection = child.section;
-
-        // Same section check
         const sameSection =
-          (childSection || "") === (parentSection || "");
+          (child.section || "") === (parentSection || "");
 
-        // Child pattern 1: "1a.", "1b." etc. (explicit sub-numbering)
+        // Only pattern: explicit "1a.", "1b." with same parent number
         if (childNum === parentNum && childSub !== null && sameSection) {
           children.push(child);
           j++;
           continue;
         }
 
-        // Child pattern 2: unnumbered field immediately following,
-        // with a short generic label like "Length", "Width", "House", "Fence"
-        // that looks like a sub-input rather than a standalone question
-        if (
-          childNum === null &&
-          sameSection &&
-          stripNumbering(child.label).length < 40
-        ) {
-          children.push(child);
-          j++;
-          continue;
-        }
-
-        // Child pattern 3: next numbered field is a DIFFERENT number → stop
+        // Any other field (different number, unnumbered, different section) → stop
         break;
       }
 
       if (children.length > 0) {
-        // Emit children with contextual labels preserving parent number
-        const letterStart = "a".charCodeAt(0);
-        for (let k = 0; k < children.length; k++) {
-          const child = children[k];
+        // Parent consumed — emit children with contextual labels
+        for (const child of children) {
           const childText = stripNumbering(child.label);
-          const existingSub = leadingSub(child.label);
+          const existingSub = leadingSub(child.label)!;
 
-          // Assign sub-letter if child doesn't already have one
-          const subLetter =
-            existingSub || String.fromCharCode(letterStart + k);
-
-          // Build contextual label: "1a. Total Yard Dimensions — Length"
+          // Add parent context if child label doesn't already include it
+          const parentFirstWord = parentText.split(" ")[0].toLowerCase();
           const alreadyHasContext =
-            norm(childText).includes(norm(parentText.split(" ")[0]));
+            childText.toLowerCase().includes(parentFirstWord);
+
           const contextLabel = alreadyHasContext
-            ? `${parentNum}${subLetter}. ${childText}`
-            : `${parentNum}${subLetter}. ${parentText} — ${childText}`;
+            ? `${parentNum}${existingSub}. ${childText}`
+            : `${parentNum}${existingSub}. ${parentText} — ${childText}`;
 
           result.push({
             ...child,
@@ -309,7 +293,7 @@ function mergeCompoundFields(fields: RawField[]): RawField[] {
       }
     }
 
-    // No children found — emit field as-is
+    // No sub-numbered children → emit field as-is
     result.push(field);
     i++;
   }
@@ -343,7 +327,13 @@ function repairCheckboxes(fields: RawField[]): RawField[] {
 }
 
 // --- Pass 4: Extract helper text from labels into placeholders ---
-// "(e.g., 32 ft)" or "(ft)" or "(concrete, pavers, etc.)" → placeholder
+//
+// RULES:
+// - "(e.g., 32 ft)" → move to placeholder (explicit example)
+// - "(concrete, pavers, etc.)" → move to placeholder (example list)
+// - "(ft)", "(Sq Ft)", "(Est. Gallons)" → KEEP in label, do NOT strip
+//   These are units/qualifiers that clarify the question, not hints.
+// - "(Overall)", "(Interior)" → KEEP in label, these are clarifiers
 
 function extractHelperText(fields: RawField[]): RawField[] {
   return fields.map((f) => {
@@ -359,18 +349,7 @@ function extractHelperText(fields: RawField[]): RawField[] {
       placeholder = hintMatch[1].trim();
     }
 
-    // Pattern 2: trailing "(ft)", "(lbs)", "(inches)", "(sq ft)" — unit hints
-    if (!placeholder) {
-      const unitMatch = label.match(
-        /\s*\((ft|feet|in|inches|lbs|pounds|sq\s*ft|gallons|gal|yds|yards|meters|m|cm)\)\s*$/i
-      );
-      if (unitMatch) {
-        label = label.slice(0, unitMatch.index).trim();
-        placeholder = `Enter value in ${unitMatch[1]}`;
-      }
-    }
-
-    // Pattern 3: trailing "(concrete, pavers, etc.)" — example list
+    // Pattern 2: "(concrete, pavers, etc.)" — example list with "etc."
     if (!placeholder) {
       const listMatch = label.match(/\s*\(([^)]*etc\.?)\)\s*$/i);
       if (listMatch) {
@@ -378,6 +357,10 @@ function extractHelperText(fields: RawField[]): RawField[] {
         placeholder = `e.g., ${listMatch[1]}`;
       }
     }
+
+    // NOTE: We intentionally do NOT strip unit parentheticals like
+    // "(ft)", "(Sq Ft)", "(Est. Gallons)", "(Overall)" from labels.
+    // These clarify what the field IS, not how to fill it.
 
     if (label !== f.label || placeholder !== f.placeholder) {
       return { ...f, label, placeholder };
@@ -470,7 +453,18 @@ function sanitizeFields(fields: RawField[]): FormField[] {
 
 // --- Full pipeline ---
 
+/** Conservative fallback — only sanitize, no structural changes */
+function conservativeNormalize(raw: ExtractedTemplate): FormField[] {
+  let fields = raw.fields;
+  fields = repairCheckboxes(fields);
+  fields = extractHelperText(fields);
+  return sanitizeFields(fields);
+}
+
+const BLOAT_THRESHOLD = 0.30; // 30% — if pipeline adds more than this, fallback
+
 function normalizeExtractedFields(raw: ExtractedTemplate): FormField[] {
+  const rawCount = raw.fields.length;
   let fields = raw.fields;
 
   // Collect section names
@@ -486,7 +480,18 @@ function normalizeExtractedFields(raw: ExtractedTemplate): FormField[] {
   fields = extractHelperText(fields);                  // 4. notes → placeholders
   fields = fixNumbering(fields);                       // 5. sort by number
 
-  return sanitizeFields(fields);                       // 6. dedupe + validate
+  const result = sanitizeFields(fields);               // 6. dedupe + validate
+
+  // Bloat guard: if normalization inflated field count too much, something
+  // went wrong in the merge pass. Fall back to conservative normalization.
+  if (rawCount > 0 && result.length > rawCount * (1 + BLOAT_THRESHOLD)) {
+    console.warn(
+      `[scan] Bloat guard: normalization produced ${result.length} fields from ${rawCount} raw (>${Math.round(BLOAT_THRESHOLD * 100)}% increase). Falling back to conservative pass.`
+    );
+    return conservativeNormalize(raw);
+  }
+
+  return result;
 }
 
 // --- Core extraction (single image, with timeout) ---
