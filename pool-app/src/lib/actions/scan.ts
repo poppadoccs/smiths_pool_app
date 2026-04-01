@@ -329,7 +329,7 @@ function dropSectionHeaderFields(
   });
 }
 
-// --- Pass 2a: Clean up label artifacts ---
+// --- Pass 1: Clean up label artifacts ---
 
 function cleanLabels(fields: RawField[]): RawField[] {
   return fields.map((f) => {
@@ -338,8 +338,18 @@ function cleanLabels(fields: RawField[]): RawField[] {
     // Strip leading "[ ]" or "[x]" checkbox artifacts
     label = label.replace(/^\[\s*[xX]?\s*\]\s*/, "");
 
-    // Strip trailing colons (common in scanned forms)
+    // Strip trailing colons
     label = label.replace(/:\s*$/, "");
+
+    // Fix truncated parentheses: "Spa Type Raised (" → "Spa Type Raised"
+    label = label.replace(/\s*\(\s*$/, "");
+
+    // Fix unmatched trailing paren: "something)" → "something"
+    label = label.replace(/\)\s*$/, (match) => {
+      // Only strip if there's no opening paren
+      if (!label.includes("(")) return "";
+      return match;
+    });
 
     // Normalize whitespace
     label = label.trim().replace(/\s+/g, " ");
@@ -351,7 +361,101 @@ function cleanLabels(fields: RawField[]): RawField[] {
   });
 }
 
-// --- Pass 2b: Drop bogus single-child splits ---
+// --- Pass 2b: Absorb option/note children back into parent ---
+//
+// Detects sub-numbered "children" that are actually option values or
+// instructional notes, not real input fields. Examples:
+//   "5a. Easements None (Check city plat map)" → note, not a field
+//   "25a. Diving Board/Slide No (If yes, requires 8ft+ depth)" → note
+//   "23a. Spa Type Raised" → option value, not a separate input
+//
+// Rule: if a child's stripped label is a single word or looks like
+// Yes/No/None + optional parenthetical, it's an option/note.
+// Absorb it as an option on the parent or drop it.
+
+function absorbOptionChildren(fields: RawField[]): RawField[] {
+  const result: RawField[] = [];
+  let i = 0;
+
+  while (i < fields.length) {
+    const field = fields[i];
+    const parentNum = leadingNumber(field.label);
+    const parentSub = leadingSub(field.label);
+
+    if (parentNum !== null && parentSub === null) {
+      const parentSection = field.section || "";
+
+      // Collect sub-children
+      const children: RawField[] = [];
+      let j = i + 1;
+      while (j < fields.length) {
+        const child = fields[j];
+        if (
+          leadingNumber(child.label) === parentNum &&
+          leadingSub(child.label) !== null &&
+          (child.section || "") === parentSection
+        ) {
+          children.push(child);
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      if (children.length > 0) {
+        // Check each child: is it a real input or an option/note?
+        const realChildren: RawField[] = [];
+        const absorbedOptions: string[] = [];
+
+        for (const child of children) {
+          const childText = stripNumbering(child.label);
+
+          // Pattern: single word like "None", "Yes", "No", "Raised", "Attached"
+          const isSingleWord = !/\s/.test(childText.replace(/\(.*\)/, "").trim());
+
+          // Pattern: starts with Yes/No/None + optional parenthetical
+          const isYesNoNone = /^(yes|no|none|n\/a)\b/i.test(childText);
+
+          // Pattern: contains instructional text like "If yes", "Check", "requires"
+          const isInstruction = /\b(if\s+yes|if\s+no|check|requires|must|see|refer)\b/i.test(childText);
+
+          // Pattern: looks like an option value for the parent
+          // (short text, no question mark, no blank indicator)
+          const isOptionLike = isSingleWord && childText.length < 30;
+
+          if (isYesNoNone || isInstruction || isOptionLike) {
+            // This is an option or note — absorb into parent
+            const cleanOption = childText.replace(/\s*\(.*\)\s*$/, "").trim();
+            if (cleanOption) absorbedOptions.push(cleanOption);
+          } else {
+            realChildren.push(child);
+          }
+        }
+
+        // If we absorbed options, add them to parent
+        if (absorbedOptions.length > 0) {
+          const existingOptions = Array.isArray(field.options) ? field.options : [];
+          const mergedOptions = [...existingOptions, ...absorbedOptions];
+          result.push({ ...field, options: mergedOptions });
+        } else {
+          result.push(field);
+        }
+
+        // Emit real children (they'll be processed by merge pass next)
+        result.push(...realChildren);
+        i = j;
+        continue;
+      }
+    }
+
+    result.push(field);
+    i++;
+  }
+
+  return result;
+}
+
+// --- Pass 2c: Drop bogus single-child splits ---
 //
 // The AI sometimes invents fake sub-numbered fields:
 //   "10. Length (Overall)" → AI creates "10a. Length (Overall)" as a child
@@ -671,13 +775,14 @@ function normalizeExtractedFields(raw: ExtractedTemplate): FormField[] {
   let fields = sectionStable;
 
   // Run remaining passes
-  fields = cleanLabels(fields);                        // 1. strip [ ], trailing colons
+  fields = cleanLabels(fields);                        // 1. strip [ ], trailing colons, truncated parens
   fields = dropSectionHeaderFields(fields, sections);  // 2. remove header dupes
-  fields = dropBogusChildren(fields);                  // 3. collapse single-child fakes
-  fields = mergeCompoundFields(fields);                // 4. group ≥2 children under parent
-  fields = repairCheckboxes(fields);                   // 5. fix empty checkboxes
-  fields = extractHelperText(fields);                  // 6. notes → placeholders
-  fields = fixNumbering(fields);                       // 7. sort by number
+  fields = absorbOptionChildren(fields);               // 3. absorb option/note children into parent
+  fields = dropBogusChildren(fields);                  // 4. collapse single-child fakes
+  fields = mergeCompoundFields(fields);                // 5. group ≥2 children under parent
+  fields = repairCheckboxes(fields);                   // 6. fix empty checkboxes
+  fields = extractHelperText(fields);                  // 7. notes → placeholders
+  fields = fixNumbering(fields);                       // 8. sort by number (children under parent)
 
   const result = sanitizeFields(fields);               // 6. dedupe + validate
 
