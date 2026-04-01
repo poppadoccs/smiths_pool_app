@@ -65,8 +65,9 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
 
   async function compressImage(file: File): Promise<File> {
     return imageCompression(file, {
-      maxSizeMB: 2,
-      maxWidthOrHeight: 2048,
+      maxSizeMB: 0.5,
+      maxWidthOrHeight: 1536,
+      initialQuality: 0.7,
       fileType: "image/jpeg",
       useWebWorker: false,
     });
@@ -80,17 +81,55 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
     });
   }
 
+  // --- Client-side hard timeout for any scan call ---
+  function withClientTimeout<T>(
+    promise: Promise<T>,
+    ms: number,
+    label: string
+  ): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`${label} timed out after ${ms / 1000}s`)),
+          ms
+        )
+      ),
+    ]);
+  }
+
   // --- Single image: fast path ---
   async function handleSingleImage(file: File) {
     setState("scanning");
-    setProgress({ current: 1, total: 1, status: "Scanning form..." });
+    setProgress({ current: 1, total: 1, status: "Compressing..." });
+
+    const t0 = Date.now();
+    console.log("[scan] image selected:", file.name, `${(file.size / 1024 / 1024).toFixed(1)}MB`);
 
     const compressed = await compressImage(file);
+    console.log("[scan] compressed:", `${(compressed.size / 1024).toFixed(0)}KB`, `${Date.now() - t0}ms`);
+
     setPreviews([await previewFromFile(compressed)]);
+    setProgress({ current: 1, total: 1, status: "Scanning form..." });
 
     const base64 = await fileToBase64(compressed);
-    const result = await extractFormTemplate(base64, "image/jpeg");
-    handleResult(result);
+    console.log("[scan] base64 ready:", `${(base64.length / 1024).toFixed(0)}KB`, `${Date.now() - t0}ms`);
+
+    try {
+      const result = await withClientTimeout(
+        extractFormTemplate(base64, "image/jpeg"),
+        35_000,
+        "Single-page scan"
+      );
+      console.log("[scan] result:", result.success, `${Date.now() - t0}ms`);
+      handleResult(result);
+    } catch (err) {
+      console.log("[scan] client timeout hit:", `${Date.now() - t0}ms`);
+      setLastError(
+        err instanceof Error ? err.message : "Scan timed out. Try a clearer or smaller photo."
+      );
+      setState("error");
+    }
   }
 
   // --- Multiple images: page-by-page ---
@@ -100,34 +139,49 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
     const allFields: FormField[] = [];
     const prevs: string[] = [];
     let templateName = "Scanned Form";
+    const t0 = Date.now();
 
     for (let i = 0; i < total; i++) {
       setProgress({
         current: i + 1,
         total,
-        status: `Scanning page ${i + 1} of ${total}...`,
+        status: `Compressing page ${i + 1}...`,
       });
 
       const compressed = await compressImage(files[i]);
       prevs.push(await previewFromFile(compressed));
       setPreviews([...prevs]);
 
-      const base64 = await fileToBase64(compressed);
-      const result: PageScanResult = await extractSinglePage(
-        base64,
-        "image/jpeg"
-      );
+      setProgress({
+        current: i + 1,
+        total,
+        status: `Scanning page ${i + 1} of ${total}...`,
+      });
 
-      if (result.error === "timeout") {
-        setLastError(
-          `Page ${i + 1} timed out. You can retry or skip this page.`
+      const base64 = await fileToBase64(compressed);
+      console.log(`[scan] page ${i + 1}/${total} compressed:`, `${(compressed.size / 1024).toFixed(0)}KB`, `${Date.now() - t0}ms`);
+
+      try {
+        const result: PageScanResult = await withClientTimeout(
+          extractSinglePage(base64, "image/jpeg"),
+          35_000,
+          `Page ${i + 1}`
         );
+
+        if (result.error === "timeout") {
+          setLastError(`Page ${i + 1} timed out. You can retry or skip this page.`);
+          setState("error");
+          return;
+        }
+
+        if (result.success && result.fields.length > 0) {
+          allFields.push(...result.fields);
+        }
+        console.log(`[scan] page ${i + 1} done:`, result.fields.length, "fields", `${Date.now() - t0}ms`);
+      } catch (err) {
+        setLastError(`Page ${i + 1} timed out after 35 seconds.`);
         setState("error");
         return;
-      }
-
-      if (result.success && result.fields.length > 0) {
-        allFields.push(...result.fields);
       }
     }
 
@@ -164,9 +218,26 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
     setProgress({ current: 1, total: 1, status: "Scanning PDF..." });
     setPreviews([]);
 
+    const t0 = Date.now();
+    console.log("[scan] PDF selected:", file.name, `${(file.size / 1024 / 1024).toFixed(1)}MB`);
+
     const base64 = await fileToBase64(file);
-    const result = await extractFormFromPdf(base64);
-    handleResult(result);
+
+    try {
+      const result = await withClientTimeout(
+        extractFormFromPdf(base64),
+        65_000,
+        "PDF scan"
+      );
+      console.log("[scan] PDF result:", result.success, `${Date.now() - t0}ms`);
+      handleResult(result);
+    } catch (err) {
+      console.log("[scan] PDF client timeout:", `${Date.now() - t0}ms`);
+      setLastError(
+        "PDF scan timed out. Try uploading individual page photos instead."
+      );
+      setState("error");
+    }
   }
 
   // --- Result handler ---
@@ -235,8 +306,8 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
               Upload a blank paper form
             </p>
             <p className="text-sm text-zinc-500">
-              One page? Take a photo. Multiple pages? Select all images or
-              upload a PDF.
+              One page? Take a photo. Multi-page form? Select all page photos
+              or upload a PDF.
             </p>
 
             <div className="flex gap-3">
@@ -253,7 +324,7 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
                 onClick={() => libraryRef.current?.click()}
               >
                 <ImagePlus className="size-5" />
-                Photos
+                Multiple Photos
               </Button>
             </div>
 

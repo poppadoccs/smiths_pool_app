@@ -127,7 +127,8 @@ async function resolveModel(): Promise<ResolvedModel> {
   if (process.env.USE_MOCK_FORM_SCAN === "true") return null;
 
   if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-    return { model: google("gemini-2.5-flash-lite"), provider: "gemini" };
+    const modelId = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+    return { model: google(modelId), provider: "gemini" };
   }
 
   if (await isOllamaRunning()) {
