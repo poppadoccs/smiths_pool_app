@@ -13,6 +13,8 @@ import {
   RotateCcw,
   ScanLine,
   AlertTriangle,
+  X,
+  Plus,
 } from "lucide-react";
 import {
   extractFormTemplate,
@@ -27,6 +29,7 @@ import imageCompression from "browser-image-compression";
 
 type ScanState =
   | "upload"
+  | "queue"
   | "scanning"
   | "scanning-multi"
   | "scanning-pdf"
@@ -39,9 +42,15 @@ type ScanProgress = {
   status: string;
 };
 
+type QueuedImage = {
+  file: File;
+  preview: string;
+};
+
 export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
   const [state, setState] = useState<ScanState>("upload");
   const [previews, setPreviews] = useState<string[]>([]);
+  const [queue, setQueue] = useState<QueuedImage[]>([]);
   const [progress, setProgress] = useState<ScanProgress>({
     current: 0,
     total: 0,
@@ -50,8 +59,10 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [lastError, setLastError] = useState<string>("");
   const cameraRef = useRef<HTMLInputElement>(null);
-  const libraryRef = useRef<HTMLInputElement>(null);
+  const addPageRef = useRef<HTMLInputElement>(null);
   const pdfRef = useRef<HTMLInputElement>(null);
+
+  // --- Utilities ---
 
   async function fileToBase64(file: File): Promise<string> {
     const buffer = await file.arrayBuffer();
@@ -81,7 +92,6 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
     });
   }
 
-  // --- Client-side hard timeout for any scan call ---
   function withClientTimeout<T>(
     promise: Promise<T>,
     ms: number,
@@ -132,13 +142,12 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
     }
   }
 
-  // --- Multiple images: page-by-page ---
-  async function handleMultipleImages(files: File[]) {
+  // --- Multi-page: process queued images ---
+  async function handleScanQueue(images: QueuedImage[]) {
     setState("scanning-multi");
-    const total = files.length;
+    const total = images.length;
     const allFields: FormField[] = [];
     const prevs: string[] = [];
-    let templateName = "Scanned Form";
     const t0 = Date.now();
 
     for (let i = 0; i < total; i++) {
@@ -148,7 +157,7 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
         status: `Compressing page ${i + 1}...`,
       });
 
-      const compressed = await compressImage(files[i]);
+      const compressed = await compressImage(images[i].file);
       prevs.push(await previewFromFile(compressed));
       setPreviews([...prevs]);
 
@@ -185,14 +194,9 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
       }
     }
 
-    // Renumber all fields in order
-    const merged = allFields.map((f, idx) => ({ ...f, order: idx }));
+    setProgress({ current: total, total, status: "Building draft..." });
 
-    setProgress({
-      current: total,
-      total,
-      status: "Building draft...",
-    });
+    const merged = allFields.map((f, idx) => ({ ...f, order: idx }));
 
     if (merged.length === 0) {
       setLastError("No fields extracted from any page. Try clearer photos.");
@@ -200,11 +204,10 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
       return;
     }
 
-    // Use first page's name if available, otherwise generic
     handleResult({
       success: true,
       template: {
-        name: templateName,
+        name: "Scanned Form",
         description: `Scanned from ${total} page${total > 1 ? "s" : ""}`,
         category: "",
         fields: merged,
@@ -261,16 +264,26 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
     e.target.value = "";
   }
 
-  function handleLibraryChange(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleAddToQueue(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    if (files.length === 1) {
-      handleSingleImage(files[0]);
-    } else {
-      handleMultipleImages(Array.from(files));
+    const newItems: QueuedImage[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const preview = await previewFromFile(files[i]);
+      newItems.push({ file: files[i], preview });
     }
+    setQueue((prev) => [...prev, ...newItems]);
+    if (state === "upload") setState("queue");
     e.target.value = "";
+  }
+
+  function removeFromQueue(index: number) {
+    setQueue((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+      if (next.length === 0) setState("upload");
+      return next;
+    });
   }
 
   function handlePdfChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -282,6 +295,7 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
   function handleRetry() {
     setState("upload");
     setPreviews([]);
+    setQueue([]);
     setScanResult(null);
     setLastError("");
   }
@@ -289,7 +303,7 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
   // ====================
   // UPLOAD STATE
   // ====================
-  if (state === "upload") {
+  if (state === "upload" || state === "queue") {
     return (
       <div className="space-y-4">
         {mockMode && (
@@ -306,38 +320,91 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
               Upload a blank paper form
             </p>
             <p className="text-sm text-zinc-500">
-              One page? Take a photo. Multi-page form? Select all page photos
-              or upload a PDF.
+              One page? Take a photo. Multi-page? Add each page below, then scan all at once.
             </p>
 
+            {/* Photo queue */}
+            {queue.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-zinc-700">
+                  {queue.length} page{queue.length !== 1 ? "s" : ""} ready to scan
+                </p>
+                <div className="flex gap-2 overflow-x-auto py-1">
+                  {queue.map((item, i) => (
+                    <div key={i} className="relative shrink-0">
+                      <img
+                        src={item.preview}
+                        alt={`Page ${i + 1}`}
+                        className="h-20 w-16 rounded border border-zinc-200 object-cover"
+                      />
+                      <button
+                        type="button"
+                        className="absolute -top-1.5 -right-1.5 rounded-full bg-red-500 p-0.5 text-white"
+                        onClick={() => removeFromQueue(i)}
+                      >
+                        <X className="size-3" />
+                      </button>
+                      <span className="absolute bottom-0 left-0 right-0 bg-black/50 text-center text-[10px] text-white rounded-b">
+                        {i + 1}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="flex gap-3">
-              <Button
-                className="flex-1 min-h-[52px] text-base gap-2"
-                onClick={() => cameraRef.current?.click()}
-              >
-                <Camera className="size-5" />
-                Take Photo
-              </Button>
-              <Button
-                variant="outline"
-                className="flex-1 min-h-[52px] text-base gap-2"
-                onClick={() => libraryRef.current?.click()}
-              >
-                <ImagePlus className="size-5" />
-                Multiple Photos
-              </Button>
+              {queue.length === 0 ? (
+                <>
+                  <Button
+                    className="flex-1 min-h-[52px] text-base gap-2"
+                    onClick={() => cameraRef.current?.click()}
+                  >
+                    <Camera className="size-5" />
+                    Take Photo
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="flex-1 min-h-[52px] text-base gap-2"
+                    onClick={() => addPageRef.current?.click()}
+                  >
+                    <ImagePlus className="size-5" />
+                    Add Pages
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    variant="outline"
+                    className="flex-1 min-h-[52px] text-base gap-2"
+                    onClick={() => addPageRef.current?.click()}
+                  >
+                    <Plus className="size-5" />
+                    Add More
+                  </Button>
+                  <Button
+                    className="flex-1 min-h-[52px] text-base gap-2"
+                    onClick={() => handleScanQueue(queue)}
+                  >
+                    <ScanLine className="size-5" />
+                    Scan {queue.length} Page{queue.length !== 1 ? "s" : ""}
+                  </Button>
+                </>
+              )}
             </div>
 
-            <Button
-              variant="outline"
-              className="w-full min-h-[48px] text-base gap-2"
-              onClick={() => pdfRef.current?.click()}
-            >
-              <FileUp className="size-5" />
-              Upload PDF
-            </Button>
+            {queue.length === 0 && (
+              <Button
+                variant="outline"
+                className="w-full min-h-[48px] text-base gap-2"
+                onClick={() => pdfRef.current?.click()}
+              >
+                <FileUp className="size-5" />
+                Upload PDF
+              </Button>
+            )}
 
-            {/* Single photo (camera) */}
+            {/* Camera input (single) */}
             <input
               ref={cameraRef}
               type="file"
@@ -346,14 +413,14 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
               className="hidden"
               onChange={handleCameraChange}
             />
-            {/* Multiple photos (library) */}
+            {/* Library input (multi-select or single, adds to queue) */}
             <input
-              ref={libraryRef}
+              ref={addPageRef}
               type="file"
               accept="image/jpeg,image/png,image/webp"
               multiple
               className="hidden"
-              onChange={handleLibraryChange}
+              onChange={handleAddToQueue}
             />
             {/* PDF */}
             <input
@@ -379,7 +446,6 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
   ) {
     return (
       <div className="space-y-4">
-        {/* Show latest preview thumbnail */}
         {previews.length > 0 && (
           <div className="rounded-lg overflow-hidden border border-zinc-200">
             <img
@@ -417,7 +483,7 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
               )}
               <p className="text-sm text-zinc-500 mt-2">
                 {state === "scanning-pdf"
-                  ? "Gemini is reading your PDF. This may take up to 60 seconds."
+                  ? "Reading PDF — up to 60 seconds."
                   : "Extracting fields — about 10-20 seconds per page."}
               </p>
             </div>
@@ -469,30 +535,14 @@ export function ScanFlow({ mockMode = false }: { mockMode?: boolean }) {
                 <FileUp className="size-4" />
                 Upload as PDF Instead
               </Button>
-              <Button
-                variant="ghost"
-                className="w-full min-h-[44px] text-sm text-zinc-500"
-                onClick={() => libraryRef.current?.click()}
-              >
-                Or select different photos
-              </Button>
             </div>
 
-            {/* Keep file inputs available for retry options */}
             <input
               ref={pdfRef}
               type="file"
               accept="application/pdf"
               className="hidden"
               onChange={handlePdfChange}
-            />
-            <input
-              ref={libraryRef}
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              multiple
-              className="hidden"
-              onChange={handleLibraryChange}
             />
           </CardContent>
         </Card>

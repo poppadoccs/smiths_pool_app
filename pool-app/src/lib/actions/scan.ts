@@ -197,6 +197,114 @@ function norm(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+// --- Pass 0: Stabilize section assignment ---
+//
+// The AI is inconsistent with sections: sometimes it assigns them,
+// sometimes it leaves fields in "General", sometimes it invents sections.
+//
+// Strategy:
+// 1. Count how many fields have a non-empty section from the AI
+// 2. If majority (>50%) have sections → trust the AI, fill gaps by
+//    propagating the last-seen section forward
+// 3. If minority have sections → don't trust them. Instead, detect
+//    section-header-like fields (Roman numeral or all-caps labels with
+//    no real input type) and use those as section boundaries
+// 4. If no sections detectable at all → leave as "General" and flag
+//    low confidence (caller can check this)
+
+type SectionStabilizeResult = {
+  fields: RawField[];
+  sections: Set<string>;
+  lowConfidenceSections: boolean;
+};
+
+function stabilizeSections(fields: RawField[]): SectionStabilizeResult {
+  if (fields.length === 0) {
+    return { fields, sections: new Set(), lowConfidenceSections: false };
+  }
+
+  const withSection = fields.filter((f) => f.section && f.section.trim());
+  const ratio = withSection.length / fields.length;
+
+  // Case 1: AI assigned sections to most fields — trust and fill gaps
+  if (ratio > 0.5) {
+    let lastSection = "";
+    const repaired = fields.map((f) => {
+      if (f.section && f.section.trim()) {
+        lastSection = f.section.trim();
+        return f;
+      }
+      // Fill gap with last-seen section
+      if (lastSection) {
+        return { ...f, section: lastSection };
+      }
+      return f;
+    });
+
+    const sections = new Set<string>();
+    for (const f of repaired) {
+      if (f.section) sections.add(f.section);
+    }
+
+    return { fields: repaired, sections, lowConfidenceSections: false };
+  }
+
+  // Case 2: Try to detect section headers from the fields themselves
+  // Look for fields that match section-header patterns:
+  // - Roman numeral prefix: "I.", "II.", "III.", "IV." etc.
+  // - All-caps label with no real input (type=text, no placeholder)
+  // - Label that looks like a header, not a question
+
+  const ROMAN_PREFIX = /^[IVXLC]+\.\s+/i;
+
+  const detectedSections: { index: number; name: string }[] = [];
+  for (let i = 0; i < fields.length; i++) {
+    const label = fields[i].label.trim();
+    if (ROMAN_PREFIX.test(label) && fields[i].type === "text" && !fields[i].placeholder) {
+      detectedSections.push({ index: i, name: label });
+    }
+  }
+
+  if (detectedSections.length > 0) {
+    // Assign each field to the most recent detected section header
+    const repaired: RawField[] = [];
+    let currentSection = "";
+    let headerIndices = new Set(detectedSections.map((s) => s.index));
+
+    for (let i = 0; i < fields.length; i++) {
+      if (headerIndices.has(i)) {
+        currentSection = fields[i].label.trim();
+        // Don't emit the header as a field — it becomes the section name
+        continue;
+      }
+      repaired.push({
+        ...fields[i],
+        section: currentSection || fields[i].section,
+      });
+    }
+
+    const sections = new Set<string>();
+    for (const f of repaired) {
+      if (f.section) sections.add(f.section);
+    }
+
+    return { fields: repaired, sections, lowConfidenceSections: false };
+  }
+
+  // Case 3: No reliable sections detected
+  // Use whatever the AI gave us but flag as low confidence
+  const sections = new Set<string>();
+  for (const f of fields) {
+    if (f.section) sections.add(f.section);
+  }
+
+  return {
+    fields,
+    sections,
+    lowConfidenceSections: sections.size <= 1,
+  };
+}
+
 // --- Pass 1: Drop section-header-as-field duplicates ---
 
 function dropSectionHeaderFields(
@@ -465,15 +573,12 @@ const BLOAT_THRESHOLD = 0.30; // 30% — if pipeline adds more than this, fallba
 
 function normalizeExtractedFields(raw: ExtractedTemplate): FormField[] {
   const rawCount = raw.fields.length;
-  let fields = raw.fields;
 
-  // Collect section names
-  const sections = new Set<string>();
-  for (const f of fields) {
-    if (f.section) sections.add(f.section);
-  }
+  // Pass 0: Stabilize sections first
+  const { fields: sectionStable, sections } = stabilizeSections(raw.fields);
+  let fields = sectionStable;
 
-  // Run passes in order
+  // Run remaining passes
   fields = dropSectionHeaderFields(fields, sections); // 1. remove header dupes
   fields = mergeCompoundFields(fields);               // 2. group parent/children
   fields = repairCheckboxes(fields);                   // 3. fix empty checkboxes
@@ -482,8 +587,7 @@ function normalizeExtractedFields(raw: ExtractedTemplate): FormField[] {
 
   const result = sanitizeFields(fields);               // 6. dedupe + validate
 
-  // Bloat guard: if normalization inflated field count too much, something
-  // went wrong in the merge pass. Fall back to conservative normalization.
+  // Bloat guard
   if (rawCount > 0 && result.length > rawCount * (1 + BLOAT_THRESHOLD)) {
     console.warn(
       `[scan] Bloat guard: normalization produced ${result.length} fields from ${rawCount} raw (>${Math.round(BLOAT_THRESHOLD * 100)}% increase). Falling back to conservative pass.`
