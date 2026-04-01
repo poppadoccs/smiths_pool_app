@@ -162,140 +162,234 @@ export async function isMockMode(): Promise<boolean> {
   return (await resolveModel()) === null;
 }
 
-// --- Post-extraction normalization pipeline ---
+// =====================================================================
+// POST-EXTRACTION NORMALIZATION PIPELINE
+// Runs after every AI extraction to repair structure issues.
+// =====================================================================
 
 type RawField = z.infer<typeof ExtractedFieldSchema>;
 
-function normalizeLabel(label: string): string {
-  return label.trim().replace(/\s+/g, " ").slice(0, 200);
+// --- Helpers ---
+
+function normalizeWhitespace(s: string): string {
+  return s.trim().replace(/\s+/g, " ");
 }
 
+/** Strip leading "1." or "1a." numbering from a label */
 function stripNumbering(label: string): string {
   return label.replace(/^\d+[a-z]?\.\s*/, "").trim();
 }
 
-function labelSimilarity(a: string, b: string): boolean {
-  const na = stripNumbering(a).toLowerCase().replace(/[^a-z0-9]/g, "");
-  const nb = stripNumbering(b).toLowerCase().replace(/[^a-z0-9]/g, "");
-  if (!na || !nb) return false;
-  return na === nb || na.includes(nb) || nb.includes(na);
+/** Extract the leading number from "3. Something" → 3 */
+function leadingNumber(label: string): number | null {
+  const m = label.match(/^(\d+)\./);
+  return m ? parseInt(m[1]) : null;
 }
 
-/**
- * Pass 1: Drop fields whose label is just a section header repeated.
- * The AI sometimes emits the section name as a field too.
- */
+/** Extract the leading sub-letter from "3a. Something" → "a" */
+function leadingSub(label: string): string | null {
+  const m = label.match(/^\d+([a-z])\./);
+  return m ? m[1] : null;
+}
+
+/** Normalize a string for fuzzy matching (lowercase, alpha-numeric only) */
+function norm(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// --- Pass 1: Drop section-header-as-field duplicates ---
+
 function dropSectionHeaderFields(
   fields: RawField[],
   sections: Set<string>
 ): RawField[] {
+  if (sections.size === 0) return fields;
+
+  // Build normalized section names for matching
+  const sectionNorms = new Set<string>();
+  for (const sec of sections) {
+    sectionNorms.add(norm(sec));
+    // Also strip Roman numeral prefix: "I. SITE LOGISTICS" → "SITE LOGISTICS"
+    const stripped = sec.replace(/^[IVXLC]+\.\s*/i, "");
+    if (stripped.length > 3) sectionNorms.add(norm(stripped));
+  }
+
   return fields.filter((f) => {
-    const label = stripNumbering(f.label).toLowerCase().replace(/[^a-z0-9]/g, "");
-    for (const sec of sections) {
-      const secNorm = sec.toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (label === secNorm) return false;
-      // Also catch "I. SITE LOGISTICS" appearing as a text field
-      const secNoNum = sec.replace(/^[IVXLC]+\.\s*/i, "").toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (label === secNoNum && secNoNum.length > 3) return false;
-    }
-    return true;
+    const labelNorm = norm(stripNumbering(f.label));
+    if (!labelNorm) return false;
+    return !sectionNorms.has(labelNorm);
   });
 }
 
-/**
- * Pass 2: Merge compound fields.
- * If we see "1. Total Yard Dimensions" followed by "1a. Length" and "1b. Width",
- * the parent becomes a section/group label and children keep contextual labels.
- * But if we see "1. Total Yard Dimensions" as a standalone text field with no
- * numbered children, keep it as-is.
- */
+// --- Pass 2: Merge compound/grouped fields ---
+// Handles:
+//   "1. Total Yard Dimensions" + children → parent label on children
+//   "4. Setbacks" + sub-items House/Property Line/Fence → grouped under parent
+//   Parent numbered "1.", children "1a.", "1b." or unnumbered adjacent children
+
 function mergeCompoundFields(fields: RawField[]): RawField[] {
   const result: RawField[] = [];
+  let i = 0;
 
-  for (let i = 0; i < fields.length; i++) {
+  while (i < fields.length) {
     const field = fields[i];
-    const label = field.label.trim();
+    const parentNum = leadingNumber(field.label);
+    const parentSub = leadingSub(field.label);
 
-    // Check if next fields are lettered sub-parts (1a, 1b, etc.)
-    const numMatch = label.match(/^(\d+)\.\s/);
-    if (numMatch) {
-      const parentNum = numMatch[1];
-      const parentText = stripNumbering(label);
+    // Only consider numbered parents WITHOUT a sub-letter (e.g., "1." not "1a.")
+    if (parentNum !== null && parentSub === null) {
+      const parentText = stripNumbering(field.label);
+      const parentSection = field.section;
 
-      // Look ahead for children like "1a.", "1b.", etc.
+      // Look ahead: collect children that belong to this parent
       const children: RawField[] = [];
       let j = i + 1;
+
       while (j < fields.length) {
-        const childLabel = fields[j].label.trim();
-        const childMatch = childLabel.match(
-          new RegExp(`^${parentNum}[a-z]\\.\\s`)
-        );
-        if (childMatch) {
-          children.push(fields[j]);
+        const child = fields[j];
+        const childNum = leadingNumber(child.label);
+        const childSub = leadingSub(child.label);
+        const childSection = child.section;
+
+        // Same section check
+        const sameSection =
+          (childSection || "") === (parentSection || "");
+
+        // Child pattern 1: "1a.", "1b." etc. (explicit sub-numbering)
+        if (childNum === parentNum && childSub !== null && sameSection) {
+          children.push(child);
           j++;
-        } else {
-          break;
+          continue;
         }
+
+        // Child pattern 2: unnumbered field immediately following,
+        // with a short generic label like "Length", "Width", "House", "Fence"
+        // that looks like a sub-input rather than a standalone question
+        if (
+          childNum === null &&
+          sameSection &&
+          stripNumbering(child.label).length < 40
+        ) {
+          children.push(child);
+          j++;
+          continue;
+        }
+
+        // Child pattern 3: next numbered field is a DIFFERENT number → stop
+        break;
       }
 
       if (children.length > 0) {
-        // Parent becomes a non-field marker — push children with contextual labels
-        for (const child of children) {
+        // Emit children with contextual labels preserving parent number
+        const letterStart = "a".charCodeAt(0);
+        for (let k = 0; k < children.length; k++) {
+          const child = children[k];
           const childText = stripNumbering(child.label);
-          // If child label doesn't already contain parent context, prepend it
-          const hasContext = labelSimilarity(childText, parentText) ||
-            childText.toLowerCase().includes(parentText.toLowerCase().split(" ")[0]);
-          const contextLabel = hasContext
-            ? child.label
-            : `${child.label.match(/^\d+[a-z]\./)?.[0] || ""} ${parentText} — ${childText}`.trim();
+          const existingSub = leadingSub(child.label);
+
+          // Assign sub-letter if child doesn't already have one
+          const subLetter =
+            existingSub || String.fromCharCode(letterStart + k);
+
+          // Build contextual label: "1a. Total Yard Dimensions — Length"
+          const alreadyHasContext =
+            norm(childText).includes(norm(parentText.split(" ")[0]));
+          const contextLabel = alreadyHasContext
+            ? `${parentNum}${subLetter}. ${childText}`
+            : `${parentNum}${subLetter}. ${parentText} — ${childText}`;
 
           result.push({
             ...child,
             label: contextLabel,
-            // Preserve parent's section
-            section: child.section || field.section,
+            section: child.section || parentSection,
           });
         }
-        i = j - 1; // skip children in outer loop
+        i = j;
         continue;
       }
     }
 
+    // No children found — emit field as-is
     result.push(field);
+    i++;
   }
 
   return result;
 }
 
-/**
- * Pass 3: Preserve notes/examples as placeholder text.
- * If a field has parenthetical hints like "(e.g., 32 ft)" or "ex: concrete",
- * move them to the placeholder field.
- */
-function extractHelperText(fields: RawField[]): RawField[] {
+// --- Pass 3: Fix checkbox fields without options ---
+// If a checkbox has no options, downgrade to text (an empty checkbox is useless).
+// Also: if AI extracted a parent question as checkbox but the real choices
+// are in child fields, the children should have been merged by pass 2.
+
+function repairCheckboxes(fields: RawField[]): RawField[] {
   return fields.map((f) => {
-    const label = f.label;
-    // Match (e.g., ...), (ex: ...), (example: ...), (hint: ...)
-    const hintMatch = label.match(
-      /\s*\((?:e\.?g\.?|ex|example|hint|note)[:\s]*([^)]+)\)\s*$/i
-    );
-    if (hintMatch && !f.placeholder) {
-      return {
-        ...f,
-        label: label.slice(0, hintMatch.index).trim(),
-        placeholder: hintMatch[1].trim(),
-      };
+    if (f.type === "checkbox") {
+      const hasOptions =
+        Array.isArray(f.options) && f.options.filter((o) => o.trim()).length > 0;
+      if (!hasOptions) {
+        // A single yes/no checkbox is valid — keep it
+        // But if label suggests multiple choices, downgrade to text
+        return f;
+      }
+    }
+    // If type is radio/select but no options, downgrade to text
+    if ((f.type === "radio" || f.type === "select") &&
+        (!Array.isArray(f.options) || f.options.filter((o) => o.trim()).length === 0)) {
+      return { ...f, type: "text" as const };
     }
     return f;
   });
 }
 
-/**
- * Pass 4: Ensure numbered fields stay in order.
- * Extract leading number and sort within each section.
- */
-function sortByNumberWithinSection(fields: RawField[]): RawField[] {
-  // Group by section preserving section order
+// --- Pass 4: Extract helper text from labels into placeholders ---
+// "(e.g., 32 ft)" or "(ft)" or "(concrete, pavers, etc.)" → placeholder
+
+function extractHelperText(fields: RawField[]): RawField[] {
+  return fields.map((f) => {
+    let label = f.label;
+    let placeholder = f.placeholder;
+
+    // Pattern 1: "(e.g., ...)", "(ex: ...)", "(example: ...)", "(note: ...)"
+    const hintMatch = label.match(
+      /\s*\((?:e\.?g\.?|ex|example|hint|note)[:\s,.]*([^)]+)\)\s*$/i
+    );
+    if (hintMatch && !placeholder) {
+      label = label.slice(0, hintMatch.index).trim();
+      placeholder = hintMatch[1].trim();
+    }
+
+    // Pattern 2: trailing "(ft)", "(lbs)", "(inches)", "(sq ft)" — unit hints
+    if (!placeholder) {
+      const unitMatch = label.match(
+        /\s*\((ft|feet|in|inches|lbs|pounds|sq\s*ft|gallons|gal|yds|yards|meters|m|cm)\)\s*$/i
+      );
+      if (unitMatch) {
+        label = label.slice(0, unitMatch.index).trim();
+        placeholder = `Enter value in ${unitMatch[1]}`;
+      }
+    }
+
+    // Pattern 3: trailing "(concrete, pavers, etc.)" — example list
+    if (!placeholder) {
+      const listMatch = label.match(/\s*\(([^)]*etc\.?)\)\s*$/i);
+      if (listMatch) {
+        label = label.slice(0, listMatch.index).trim();
+        placeholder = `e.g., ${listMatch[1]}`;
+      }
+    }
+
+    if (label !== f.label || placeholder !== f.placeholder) {
+      return { ...f, label, placeholder };
+    }
+    return f;
+  });
+}
+
+// --- Pass 5: Fix numbering —  preserve source numbers, sort within sections ---
+
+function fixNumbering(fields: RawField[]): RawField[] {
+  // Group by section preserving encounter order
   const sectionOrder: string[] = [];
   const groups = new Map<string, RawField[]>();
 
@@ -308,24 +402,26 @@ function sortByNumberWithinSection(fields: RawField[]): RawField[] {
     groups.get(sec)!.push(f);
   }
 
-  // Within each section, stable-sort by leading number
+  // Stable sort within each section by number, then sub-letter
   const result: RawField[] = [];
   for (const sec of sectionOrder) {
     const group = groups.get(sec)!;
     group.sort((a, b) => {
-      const numA = a.label.match(/^(\d+)/);
-      const numB = b.label.match(/^(\d+)/);
-      if (numA && numB) {
-        const diff = parseInt(numA[1]) - parseInt(numB[1]);
-        if (diff !== 0) return diff;
-        // Same number — sort by sub-letter (1a before 1b)
-        const subA = a.label.match(/^\d+([a-z])/);
-        const subB = b.label.match(/^\d+([a-z])/);
-        if (subA && subB) return subA[1].localeCompare(subB[1]);
-        if (subA) return 1; // parent before child
-        if (subB) return -1;
+      const na = leadingNumber(a.label);
+      const nb = leadingNumber(b.label);
+      if (na !== null && nb !== null) {
+        if (na !== nb) return na - nb;
+        // Same number — parent (no sub) before children (with sub)
+        const sa = leadingSub(a.label);
+        const sb = leadingSub(b.label);
+        if (!sa && sb) return -1;
+        if (sa && !sb) return 1;
+        if (sa && sb) return sa.localeCompare(sb);
       }
-      return 0; // preserve original order for unnumbered fields
+      // Numbered before unnumbered within same position
+      if (na !== null && nb === null) return -1;
+      if (na === null && nb !== null) return 1;
+      return 0; // preserve AI order for unnumbered
     });
     result.push(...group);
   }
@@ -333,9 +429,8 @@ function sortByNumberWithinSection(fields: RawField[]): RawField[] {
   return result;
 }
 
-/**
- * Pass 5: Final sanitization — dedupe IDs, validate types, assign order.
- */
+// --- Pass 6: Final sanitization — dedupe IDs, validate types, assign order ---
+
 function sanitizeFields(fields: RawField[]): FormField[] {
   const validTypes = new Set(FIELD_TYPE_VALUES);
   const seenIds = new Set<string>();
@@ -358,7 +453,7 @@ function sanitizeFields(fields: RawField[]): FormField[] {
 
       return {
         id,
-        label: normalizeLabel(f.label),
+        label: normalizeWhitespace(f.label).slice(0, 200),
         type: validTypes.has(f.type) ? f.type : "text",
         required: typeof f.required === "boolean" ? f.required : false,
         placeholder: f.placeholder?.trim().slice(0, 200),
@@ -373,25 +468,25 @@ function sanitizeFields(fields: RawField[]): FormField[] {
     });
 }
 
-/**
- * Full normalization pipeline — runs all repair passes in order.
- */
+// --- Full pipeline ---
+
 function normalizeExtractedFields(raw: ExtractedTemplate): FormField[] {
   let fields = raw.fields;
 
-  // Collect known section names
+  // Collect section names
   const sections = new Set<string>();
   for (const f of fields) {
     if (f.section) sections.add(f.section);
   }
 
-  // Pipeline
-  fields = dropSectionHeaderFields(fields, sections);
-  fields = mergeCompoundFields(fields);
-  fields = extractHelperText(fields);
-  fields = sortByNumberWithinSection(fields);
+  // Run passes in order
+  fields = dropSectionHeaderFields(fields, sections); // 1. remove header dupes
+  fields = mergeCompoundFields(fields);               // 2. group parent/children
+  fields = repairCheckboxes(fields);                   // 3. fix empty checkboxes
+  fields = extractHelperText(fields);                  // 4. notes → placeholders
+  fields = fixNumbering(fields);                       // 5. sort by number
 
-  return sanitizeFields(fields);
+  return sanitizeFields(fields);                       // 6. dedupe + validate
 }
 
 // --- Core extraction (single image, with timeout) ---
