@@ -423,20 +423,15 @@ function absorbOptionChildren(fields: RawField[]): RawField[] {
             continue;
           }
 
-          // Pattern: single word like "None", "Yes", "No", "Raised", "Attached"
-          const isSingleWord = !/\s/.test(bareText);
-
           // Pattern: starts with Yes/No/None + optional parenthetical
           const isYesNoNone = /^(yes|no|none|n\/a)\b/i.test(childText);
 
           // Pattern: contains instructional text like "If yes", "Check", "requires"
           const isInstruction = /\b(if\s+yes|if\s+no|check|requires|must|see|refer)\b/i.test(childText);
 
-          // Pattern: looks like an option value for the parent
-          // (short text, no question mark, no blank indicator)
-          const isOptionLike = isSingleWord && bareText.length < 30;
-
-          if (isYesNoNone || isInstruction || isOptionLike) {
+          // Only absorb unambiguous option/note patterns — never guess on single words
+          // like "House" or "Fence" which are real sub-field names
+          if (isYesNoNone || isInstruction) {
             // This is an option or note — absorb into parent
             const cleanOption = childText.replace(/\s*\(.*\)\s*$/, "").trim();
             if (cleanOption) absorbedOptions.push(cleanOption);
