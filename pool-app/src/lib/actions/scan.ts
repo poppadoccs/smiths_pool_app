@@ -241,6 +241,19 @@ function stabilizeSections(fields: RawField[]): SectionStabilizeResult {
       return f;
     });
 
+    // Backward fill: numbered fields before the first section header
+    // belong to the first real section, not "General". Only truly
+    // generic metadata (Date, Project Name, etc.) stays sectionless.
+    const firstSection = repaired.find(f => f.section && f.section.trim())?.section;
+    if (firstSection) {
+      for (let i = 0; i < repaired.length; i++) {
+        if (repaired[i].section?.trim()) break;
+        if (leadingNumber(repaired[i].label) !== null) {
+          repaired[i] = { ...repaired[i], section: firstSection };
+        }
+      }
+    }
+
     const sections = new Set<string>();
     for (const f of repaired) {
       if (f.section) sections.add(f.section);
@@ -281,6 +294,17 @@ function stabilizeSections(fields: RawField[]): SectionStabilizeResult {
         ...fields[i],
         section: currentSection || fields[i].section,
       });
+    }
+
+    // Backward fill: numbered fields before the first header → first section
+    const firstSectionName = detectedSections[0]?.name;
+    if (firstSectionName && repaired.length > 0) {
+      for (let i = 0; i < repaired.length; i++) {
+        if (repaired[i].section?.trim()) break;
+        if (leadingNumber(repaired[i].label) !== null) {
+          repaired[i] = { ...repaired[i], section: firstSectionName };
+        }
+      }
     }
 
     const sections = new Set<string>();
@@ -325,7 +349,12 @@ function dropSectionHeaderFields(
   return fields.filter((f) => {
     const labelNorm = norm(stripNumbering(f.label));
     if (!labelNorm) return false;
-    return !sectionNorms.has(labelNorm);
+    if (sectionNorms.has(labelNorm)) {
+      // Numbered fields like "4. Setbacks" are real questions even if
+      // their label matches a section name — keep them
+      return leadingNumber(f.label) !== null;
+    }
+    return true;
   });
 }
 
