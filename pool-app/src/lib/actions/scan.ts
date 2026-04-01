@@ -329,15 +329,98 @@ function dropSectionHeaderFields(
   });
 }
 
-// --- Pass 2: Merge compound/grouped fields (conservative) ---
+// --- Pass 2a: Clean up label artifacts ---
+
+function cleanLabels(fields: RawField[]): RawField[] {
+  return fields.map((f) => {
+    let label = f.label;
+
+    // Strip leading "[ ]" or "[x]" checkbox artifacts
+    label = label.replace(/^\[\s*[xX]?\s*\]\s*/, "");
+
+    // Strip trailing colons (common in scanned forms)
+    label = label.replace(/:\s*$/, "");
+
+    // Normalize whitespace
+    label = label.trim().replace(/\s+/g, " ");
+
+    if (label !== f.label) {
+      return { ...f, label };
+    }
+    return f;
+  });
+}
+
+// --- Pass 2b: Drop bogus single-child splits ---
 //
-// ONLY merges when the AI already produced explicit sub-numbered children:
+// The AI sometimes invents fake sub-numbered fields:
+//   "10. Length (Overall)" → AI creates "10a. Length (Overall)" as a child
+// This pass detects a parent with ONLY ONE sub-child where the child
+// is essentially the same question, and collapses back to just the parent.
+//
+// Rule: only allow parent→children merge when there are ≥2 distinct children.
+
+function dropBogusChildren(fields: RawField[]): RawField[] {
+  const result: RawField[] = [];
+  let i = 0;
+
+  while (i < fields.length) {
+    const field = fields[i];
+    const parentNum = leadingNumber(field.label);
+    const parentSub = leadingSub(field.label);
+
+    // Look for a parent (no sub-letter) followed by sub-lettered children
+    if (parentNum !== null && parentSub === null) {
+      const parentText = norm(stripNumbering(field.label));
+      const parentSection = field.section || "";
+
+      // Collect consecutive sub-children
+      const children: { field: RawField; idx: number }[] = [];
+      let j = i + 1;
+      while (j < fields.length) {
+        const child = fields[j];
+        const childNum = leadingNumber(child.label);
+        const childSub = leadingSub(child.label);
+        if (
+          childNum === parentNum &&
+          childSub !== null &&
+          (child.section || "") === parentSection
+        ) {
+          children.push({ field: child, idx: j });
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      if (children.length === 1) {
+        // Only 1 child — check if it's basically the same as the parent
+        const childText = norm(stripNumbering(children[0].field.label));
+        if (childText === parentText || parentText.includes(childText) || childText.includes(parentText)) {
+          // Bogus split: keep parent only, skip the fake child
+          result.push(field);
+          i = j;
+          continue;
+        }
+      }
+
+      // Otherwise: keep parent and all children as-is (merge pass will handle ≥2)
+    }
+
+    result.push(field);
+    i++;
+  }
+
+  return result;
+}
+
+// --- Pass 2c: Merge compound/grouped fields (conservative) ---
+//
+// ONLY merges when the AI produced ≥2 explicit sub-numbered children:
 //   "1. Total Yard Dimensions" + "1a. Length" + "1b. Width"
 //   → children get contextual labels like "1a. Total Yard Dimensions — Length"
 //
-// Does NOT split or create new fields from single fields.
-// Does NOT treat "(ft)", "(sq ft)", "(gallons)" as split signals.
-// A field like "10. Length (Overall):" stays as ONE field.
+// A single child is NOT enough to trigger a merge (handled by dropBogusChildren).
 
 function mergeCompoundFields(fields: RawField[]): RawField[] {
   const result: RawField[] = [];
@@ -348,12 +431,10 @@ function mergeCompoundFields(fields: RawField[]): RawField[] {
     const parentNum = leadingNumber(field.label);
     const parentSub = leadingSub(field.label);
 
-    // Only consider numbered parents WITHOUT a sub-letter
     if (parentNum !== null && parentSub === null) {
       const parentText = stripNumbering(field.label);
       const parentSection = field.section;
 
-      // Look ahead ONLY for explicit sub-numbered children: "1a.", "1b.", etc.
       const children: RawField[] = [];
       let j = i + 1;
 
@@ -364,24 +445,20 @@ function mergeCompoundFields(fields: RawField[]): RawField[] {
         const sameSection =
           (child.section || "") === (parentSection || "");
 
-        // Only pattern: explicit "1a.", "1b." with same parent number
         if (childNum === parentNum && childSub !== null && sameSection) {
           children.push(child);
           j++;
           continue;
         }
-
-        // Any other field (different number, unnumbered, different section) → stop
         break;
       }
 
-      if (children.length > 0) {
-        // Parent consumed — emit children with contextual labels
+      // REQUIRE ≥2 children to consume the parent
+      if (children.length >= 2) {
         for (const child of children) {
           const childText = stripNumbering(child.label);
           const existingSub = leadingSub(child.label)!;
 
-          // Add parent context if child label doesn't already include it
           const parentFirstWord = parentText.split(" ")[0].toLowerCase();
           const alreadyHasContext =
             childText.toLowerCase().includes(parentFirstWord);
@@ -401,7 +478,6 @@ function mergeCompoundFields(fields: RawField[]): RawField[] {
       }
     }
 
-    // No sub-numbered children → emit field as-is
     result.push(field);
     i++;
   }
@@ -579,11 +655,13 @@ function normalizeExtractedFields(raw: ExtractedTemplate): FormField[] {
   let fields = sectionStable;
 
   // Run remaining passes
-  fields = dropSectionHeaderFields(fields, sections); // 1. remove header dupes
-  fields = mergeCompoundFields(fields);               // 2. group parent/children
-  fields = repairCheckboxes(fields);                   // 3. fix empty checkboxes
-  fields = extractHelperText(fields);                  // 4. notes → placeholders
-  fields = fixNumbering(fields);                       // 5. sort by number
+  fields = cleanLabels(fields);                        // 1. strip [ ], trailing colons
+  fields = dropSectionHeaderFields(fields, sections);  // 2. remove header dupes
+  fields = dropBogusChildren(fields);                  // 3. collapse single-child fakes
+  fields = mergeCompoundFields(fields);                // 4. group ≥2 children under parent
+  fields = repairCheckboxes(fields);                   // 5. fix empty checkboxes
+  fields = extractHelperText(fields);                  // 6. notes → placeholders
+  fields = fixNumbering(fields);                       // 7. sort by number
 
   const result = sanitizeFields(fields);               // 6. dedupe + validate
 
