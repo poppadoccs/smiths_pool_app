@@ -87,18 +87,34 @@ export type PageScanResult = {
 
 const SYSTEM_PROMPT = `You are a form structure extractor. You analyze photos of blank paper forms and extract their structure into a digital template.
 
-Rules:
-- Extract EVERY visible field on the form, in order from top to bottom, left to right
-- Guess the best field type based on context (e.g., "Phone" → phone, "Date" → date, "Email" → email)
-- If a field has checkboxes or radio buttons next to options, extract as radio or select with the options listed
-- If a field has a large blank area, use textarea
-- If a field is for a signature, use signature
+STRUCTURE PRESERVATION (critical):
+- Preserve the EXACT section headers from the form (e.g., "I. SITE LOGISTICS & ACCESS", "II. POOL SPECIFICATIONS"). Set the "section" field to the full section header text for every field under that section.
+- Preserve question numbering in the label. If the form says "3. Gate Code", the label must be "3. Gate Code", not just "Gate Code".
+- Preserve the original order of fields within each section. Do not reorder, alphabetize, or group by type.
+
+PARENT/CHILD FIELDS (critical):
+- When a question has subfields (e.g., "5. Sun Shelf (Tanning Ledge)" with a "Depth" line below it), the subfield label must include the parent context: "5a. Sun Shelf Depth", NOT just "Depth".
+- Child fields MUST appear immediately after their parent field in the output array. Never orphan a subfield away from its parent.
+- If a question has multiple blanks or sub-answers (e.g., "Length ___ Width ___"), extract each as a separate field with contextual labels: "4a. Pool Length", "4b. Pool Width".
+
+FIELD TYPE RULES:
+- "Phone", "Ph", "Tel" → type: phone
+- "Email", "E-mail" → type: email
+- "Date", "DOB" → type: date
+- Checkboxes or Yes/No → type: checkbox
+- Radio buttons or pick-one options → type: radio (include all options)
+- Dropdown or select-one from a list → type: select (include all options)
+- Large blank area, multi-line, or "Notes"/"Comments" → type: textarea
+- Signature line → type: signature
+- Everything else → type: text
 - Mark fields as required if they have asterisks (*), "required" text, or are clearly mandatory
-- Group fields into sections if the form has section headers
-- Extract the form title from the header
+
+OTHER RULES:
+- Extract the form title from the header or top of the page
 - Set confidence based on how clearly you can read the field (1.0 = crystal clear, 0.5 = somewhat readable)
 - Do NOT make up fields that aren't on the form
-- Do NOT include page numbers, form numbers, or decorative elements as fields`;
+- Do NOT include page numbers, form revision numbers, or decorative elements as fields
+- Do NOT use generic labels like "Field 1" or "Text Input" — always use the actual text from the form`;
 
 const PAGE_TIMEOUT_MS = 30_000;
 
