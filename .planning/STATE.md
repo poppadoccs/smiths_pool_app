@@ -86,11 +86,12 @@ None yet.
 |---|-------------|------|--------|-----------|
 | 260416-3w4 | finish-proof-pass: E2E green, branding report | 2026-04-16 | d00c915 | [260416-3w4](./quick/260416-3w4-finish-proof-pass-e2e-green-branding-fin/) |
 | 260416-4tw | real-environment proof: env vars, tests, import-from-paper E2E, persistence, branding | 2026-04-16 | 0668e2a | [260416-4tw](./quick/260416-4tw-real-environment-proof-env-vars-tests-im/) |
+| 260416-ki0 | embed job photos in PDF as photo appendix | 2026-04-16 | 6584283 | [260416-ki0](./quick/260416-ki0-embed-job-photos-in-pdf-as-photo-appendi/) |
 
-Last activity: 2026-04-16 — Completed quick task 260416-4tw: real-env proof passed (51 unit tests, 2 E2E, real Gemini extraction + persistence, real logo + app icons)
+Last activity: 2026-04-16 — Completed quick task 260416-ki0: job photos embedded in PDF appendix via fetch + jsPDF addImage, page-break handled, graceful error fallback
 
 ## Session Continuity
 
 Last session: 2026-04-16
-Stopped at: Quick task 260416-4tw complete — real-env proof done, 2 blockers remain (scan-as-photo not implemented, email delivery unverified)
+Stopped at: Quick task 260416-ki0 complete — job photos now embedded in PDF as photo appendix
 Resume file: None
