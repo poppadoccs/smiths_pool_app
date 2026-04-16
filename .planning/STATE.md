@@ -88,8 +88,9 @@ None yet.
 | 260416-4tw | real-environment proof: env vars, tests, import-from-paper E2E, persistence, branding | 2026-04-16 | 0668e2a | [260416-4tw](./quick/260416-4tw-real-environment-proof-env-vars-tests-im/) |
 | 260416-ki0 | embed job photos in PDF as photo appendix | 2026-04-16 | 6584283 | [260416-ki0](./quick/260416-ki0-embed-job-photos-in-pdf-as-photo-appendi/) |
 | 260416-krc | fix form photo fields to upload blob and populate job.photos | 2026-04-16 | 93be93a | [260416-krc](./quick/260416-krc-fix-form-photo-fields-to-upload-blob-and/) |
+| 260416-mdz | restore numbered question fidelity and inline photo placement in PDF | 2026-04-16 | b796f85 | [260416-mdz](./quick/260416-mdz-restore-numbered-question-fidelity-and-i/) |
 
-Last activity: 2026-04-16 — Completed quick task 260416-krc: form photo fields now do real Vercel Blob upload + savePhotoMetadata so job.photos is populated for PDF appendix
+Last activity: 2026-04-16 — Completed quick task 260416-mdz: numbered questions restored, DB sections fixed, photos now embed inline in PDF
 
 ## Session Continuity
 
