@@ -50,7 +50,8 @@ export async function submitJob(
   });
   if (!job) return { success: false, error: "Job not found" };
 
-  // 2. Prevent double-submit
+  // 2. Prevent double-submit (read check for fast-path UX feedback only;
+  //    the atomic updateMany below is the real guard against concurrent submits)
   if (job.status === "SUBMITTED") {
     return { success: false, error: "This job has already been submitted" };
   }
@@ -120,9 +121,9 @@ export async function submitJob(
     };
   }
 
-  // 6. Save to DB first — PDF generation reads workerSignature/submittedBy from DB
-  await db.job.update({
-    where: { id: jobId },
+  // 6. Atomic DB write — updateMany with status guard prevents concurrent double-submits
+  const updated = await db.job.updateMany({
+    where: { id: jobId, status: { not: "SUBMITTED" } },
     data: {
       status: "SUBMITTED",
       submittedBy,
@@ -130,12 +131,17 @@ export async function submitJob(
       workerSignature: workerSignature || null,
     },
   });
+  if (updated.count === 0) {
+    return { success: false, error: "This job has already been submitted" };
+  }
 
   // 7. Generate branded PDF (non-blocking — email still sends if PDF fails)
+  // jsPDF datauristring emits: data:application/pdf;filename=generated.pdf;base64,<data>
+  // Use a match to safely extract just the base64 payload.
   type PdfAttachment = {
     filename: string;
     content: string;
-    content_type: string;
+    contentType: string;
   };
   let pdfAttachment: PdfAttachment | undefined;
   try {
@@ -143,11 +149,20 @@ export async function submitJob(
       jobTitle.replace(/[^a-z0-9]/gi, "-").toLowerCase() || "report";
     const pdfResult = await generateJobPdf(jobId);
     if (pdfResult.success && pdfResult.data) {
-      pdfAttachment = {
-        filename: `${safeFilename}-report.pdf`,
-        content: pdfResult.data.replace(/^data:[^;]+;base64,/, ""),
-        content_type: "application/pdf",
-      };
+      const match = pdfResult.data.match(
+        /^data:application\/pdf(?:;[^,]*)?;base64,(.+)$/,
+      );
+      if (match) {
+        pdfAttachment = {
+          filename: `${safeFilename}-report.pdf`,
+          content: match[1],
+          contentType: "application/pdf",
+        };
+      } else {
+        console.error(
+          "[submit] PDF data URI format unexpected, skipping attachment",
+        );
+      }
     }
   } catch (err) {
     console.error(

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock Resend — must be a real class since submit.ts uses `new Resend()`
-const mockSend = vi.fn().mockResolvedValue({ data: { id: "email-1" }, error: null });
+const mockSend = vi
+  .fn()
+  .mockResolvedValue({ data: { id: "email-1" }, error: null });
 vi.mock("resend", () => {
   return {
     Resend: class MockResend {
@@ -15,11 +17,20 @@ vi.mock("@/lib/db", () => ({
     job: {
       findUnique: vi.fn(),
       update: vi.fn().mockResolvedValue({}),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     setting: {
       findUnique: vi.fn().mockResolvedValue(null),
     },
   },
+}));
+
+// jsPDF emits data:application/pdf;filename=generated.pdf;base64,...
+vi.mock("@/lib/actions/generate-pdf", () => ({
+  generateJobPdf: vi.fn().mockResolvedValue({
+    success: true,
+    data: "data:application/pdf;filename=generated.pdf;base64,JVBER",
+  }),
 }));
 
 vi.mock("next/cache", () => ({
@@ -70,8 +81,8 @@ describe("submitJob", () => {
     const result = await submitJob("job-1", "Mike");
 
     expect(result.success).toBe(true);
-    expect(db.job.update).toHaveBeenCalledWith({
-      where: { id: "job-1" },
+    expect(db.job.updateMany).toHaveBeenCalledWith({
+      where: { id: "job-1", status: { not: "SUBMITTED" } },
       data: expect.objectContaining({
         status: "SUBMITTED",
         submittedBy: "Mike",
@@ -88,7 +99,7 @@ describe("submitJob", () => {
 
   it("prevents double submission", async () => {
     vi.mocked(db.job.findUnique).mockResolvedValue(
-      mockJob({ status: "SUBMITTED" }) as never
+      mockJob({ status: "SUBMITTED" }) as never,
     );
 
     const result = await submitJob("job-1", "Mike");
@@ -98,7 +109,7 @@ describe("submitJob", () => {
 
   it("rejects when form data is empty", async () => {
     vi.mocked(db.job.findUnique).mockResolvedValue(
-      mockJob({ formData: null }) as never
+      mockJob({ formData: null }) as never,
     );
 
     const result = await submitJob("job-1", "Mike");
@@ -108,7 +119,9 @@ describe("submitJob", () => {
 
   it("rejects when required fields are missing", async () => {
     vi.mocked(db.job.findUnique).mockResolvedValue(
-      mockJob({ formData: { customer_name: "", address: "123 Main" } }) as never
+      mockJob({
+        formData: { customer_name: "", address: "123 Main" },
+      }) as never,
     );
 
     const result = await submitJob("job-1", "Mike");
@@ -127,7 +140,7 @@ describe("submitJob", () => {
         from: "Pool Field Forms <forms@mail.lucacllc.com>",
         to: ["test@example.com"],
         subject: "Job Submission: Test Job",
-      })
+      }),
     );
   });
 });
