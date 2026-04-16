@@ -30,13 +30,12 @@ export function buildSubmissionEmail({
       if (field.type === "checkbox") {
         displayValue = value ? "Yes" : "No";
       } else if (field.type === "photo") {
-        // Never render raw blob URLs — they're long and break layout.
-        // Render a short "View photo" link, or "—" if empty.
-        if (typeof value === "string" && value.trim() !== "") {
-          displayValue = `<a href="${escapeHtml(value)}" target="_blank" style="color: #0070f3; text-decoration: none;">View photo</a>`;
-        } else {
-          displayValue = '<span style="color: #999;">—</span>';
-        }
+        // formData stores the filename (e.g. "IMG_1234.jpg"), not a blob URL.
+        // Real photos are shown as thumbnails in the Photos section below.
+        displayValue =
+          typeof value === "string" && value.trim() !== ""
+            ? "Photo attached"
+            : '<span style="color: #999;">—</span>';
       } else if (typeof value === "string" && value.trim() !== "") {
         displayValue = escapeHtml(value);
       } else {
@@ -45,10 +44,10 @@ export function buildSubmissionEmail({
 
       return `
         <tr>
-          <td style="padding: 8px 12px; border-bottom: 1px solid #e5e5e5; font-weight: 500; width: 40%; vertical-align: top; word-break: break-word; overflow-wrap: break-word;">
+          <td width="40%" style="padding: 8px 12px; border-bottom: 1px solid #e5e5e5; font-weight: 500; width: 40%; vertical-align: top; word-break: break-word; word-wrap: break-word; overflow-wrap: break-word;">
             ${escapeHtml(field.label)}
           </td>
-          <td style="padding: 8px 12px; border-bottom: 1px solid #e5e5e5; word-break: break-word; overflow-wrap: break-word;">
+          <td width="60%" style="padding: 8px 12px; border-bottom: 1px solid #e5e5e5; word-break: break-word; word-wrap: break-word; overflow-wrap: break-word;">
             ${displayValue}
           </td>
         </tr>`;
