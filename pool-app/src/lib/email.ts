@@ -44,10 +44,10 @@ export function buildSubmissionEmail({
 
       return `
         <tr>
-          <td width="40%" style="padding: 8px 12px; border-bottom: 1px solid #e5e5e5; font-weight: 500; width: 40%; vertical-align: top; word-break: break-word; word-wrap: break-word; overflow-wrap: break-word;">
+          <td width="160" style="padding: 8px 10px 8px 0; border-bottom: 1px solid #e5e5e5; font-weight: 600; font-size: 13px; width: 160px; min-width: 140px; vertical-align: top; color: #555; white-space: normal; word-break: break-word; word-wrap: break-word; overflow-wrap: break-word;">
             ${escapeHtml(field.label)}
           </td>
-          <td width="60%" style="padding: 8px 12px; border-bottom: 1px solid #e5e5e5; word-break: break-word; word-wrap: break-word; overflow-wrap: break-word;">
+          <td style="padding: 8px 0 8px 12px; border-bottom: 1px solid #e5e5e5; font-size: 14px; vertical-align: top; word-break: break-word; word-wrap: break-word; overflow-wrap: break-word;">
             ${displayValue}
           </td>
         </tr>`;
@@ -99,7 +99,7 @@ export function buildSubmissionEmail({
     <h2 style="font-size: 18px; margin: 0 0 12px 0; color: #333;">
       Form Details
     </h2>
-    <table style="width: 100%; border-collapse: collapse; font-size: 15px; table-layout: fixed;">
+    <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
       ${formRows}
     </table>
 
