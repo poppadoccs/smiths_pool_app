@@ -3,10 +3,16 @@
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import { Resend } from "resend";
-import { DEFAULT_TEMPLATE, type FormData, type FormField, type FormTemplate } from "@/lib/forms";
+import {
+  DEFAULT_TEMPLATE,
+  type FormData,
+  type FormField,
+  type FormTemplate,
+} from "@/lib/forms";
 import type { PhotoMetadata } from "@/lib/photos";
 import { buildSubmissionEmail } from "@/lib/email";
 import { getRecipientEmail } from "@/lib/actions/settings";
+import { generateJobPdf } from "@/lib/actions/generate-pdf";
 
 function getResend() {
   return new Resend(process.env.RESEND_API_KEY);
@@ -29,7 +35,7 @@ function validateSignature(sig: string): string | null {
 export async function submitJob(
   jobId: string,
   submittedBy: string,
-  workerSignature?: string
+  workerSignature?: string,
 ): Promise<{ success: boolean; error?: string }> {
   // 0. Validate signature format + size
   if (workerSignature) {
@@ -52,7 +58,10 @@ export async function submitJob(
   // 3. Validate form data exists
   const formData = job.formData as FormData | null;
   if (!formData) {
-    return { success: false, error: "Please fill out the form before submitting" };
+    return {
+      success: false,
+      error: "Please fill out the form before submitting",
+    };
   }
 
   // Structural integrity: verify expected field IDs are present
@@ -65,7 +74,7 @@ export async function submitJob(
     .filter((id) => !payloadKeys.has(id));
 
   console.log(
-    `[submit] Job ${jobId}: ${payloadKeys.size} keys, template expects ${tplFields.length}, missing ${missingIds.length}`
+    `[submit] Job ${jobId}: ${payloadKeys.size} keys, template expects ${tplFields.length}, missing ${missingIds.length}`,
   );
   if (tplFields.length >= 20 && missingIds.length > tplFields.length * 0.5) {
     return {
@@ -81,7 +90,7 @@ export async function submitJob(
         name: job.template.name,
         version: 1,
         fields: (job.template.fields as FormField[]).sort(
-          (a, b) => a.order - b.order
+          (a, b) => a.order - b.order,
         ),
       }
     : DEFAULT_TEMPLATE;
@@ -97,15 +106,57 @@ export async function submitJob(
     return { success: false, error: `Missing required fields: ${names}` };
   }
 
-  // 5. Build and send email
+  // 5. Preflight — verify email configured before committing anything
   const photos = (job.photos as PhotoMetadata[]) || [];
-  const jobTitle = job.name || (job.jobNumber ? `Job #${job.jobNumber}` : `Job ${job.id}`);
+  const jobTitle =
+    job.name || (job.jobNumber ? `Job #${job.jobNumber}` : `Job ${job.id}`);
 
   const submissionEmail = await getRecipientEmail();
   if (!submissionEmail) {
-    return { success: false, error: "Submission email not configured. Ask the admin to set it in Settings." };
+    return {
+      success: false,
+      error:
+        "Submission email not configured. Ask the admin to set it in Settings.",
+    };
   }
 
+  // 6. Save to DB first — PDF generation reads workerSignature/submittedBy from DB
+  await db.job.update({
+    where: { id: jobId },
+    data: {
+      status: "SUBMITTED",
+      submittedBy,
+      submittedAt: new Date(),
+      workerSignature: workerSignature || null,
+    },
+  });
+
+  // 7. Generate branded PDF (non-blocking — email still sends if PDF fails)
+  type PdfAttachment = {
+    filename: string;
+    content: string;
+    content_type: string;
+  };
+  let pdfAttachment: PdfAttachment | undefined;
+  try {
+    const safeFilename =
+      jobTitle.replace(/[^a-z0-9]/gi, "-").toLowerCase() || "report";
+    const pdfResult = await generateJobPdf(jobId);
+    if (pdfResult.success && pdfResult.data) {
+      pdfAttachment = {
+        filename: `${safeFilename}-report.pdf`,
+        content: pdfResult.data.replace(/^data:[^;]+;base64,/, ""),
+        content_type: "application/pdf",
+      };
+    }
+  } catch (err) {
+    console.error(
+      "[submit] PDF generation failed, sending without attachment:",
+      err,
+    );
+  }
+
+  // 8. Build and send email with PDF attached
   const html = buildSubmissionEmail({
     jobTitle,
     jobNumber: job.jobNumber,
@@ -120,22 +171,16 @@ export async function submitJob(
     to: [submissionEmail],
     subject: `Job Submission: ${jobTitle}`,
     html,
+    ...(pdfAttachment ? { attachments: [pdfAttachment] } : {}),
   });
 
   if (emailError) {
-    return { success: false, error: `Email failed: ${emailError.message}` };
+    // Job is already saved — don't block the worker. Email failure is an ops issue.
+    console.error(
+      `[submit] Email failed after job ${jobId} committed:`,
+      emailError.message,
+    );
   }
-
-  // 6. Lock job as submitted
-  await db.job.update({
-    where: { id: jobId },
-    data: {
-      status: "SUBMITTED",
-      submittedBy,
-      submittedAt: new Date(),
-      workerSignature: workerSignature || null,
-    },
-  });
 
   revalidatePath(`/jobs/${jobId}`);
   revalidatePath("/");
