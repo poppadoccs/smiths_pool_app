@@ -125,6 +125,7 @@ export async function generateJobPdf(
   // --- Form fields ---
   doc.setFontSize(10);
   let currentSection = "";
+  const inlinePhotoUrls = new Set<string>();
 
   for (const field of template.fields) {
     // Section header
@@ -142,18 +143,81 @@ export async function generateJobPdf(
 
     // Field label + value
     const rawValue = formData?.[field.id];
+
+    // --- Photo fields: embed inline below label ---
+    if (field.type === "photo") {
+      const photoUrl =
+        typeof rawValue === "string" && rawValue.startsWith("http")
+          ? rawValue
+          : null;
+      if (photoUrl) inlinePhotoUrls.add(photoUrl);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      const photoLabelLines = doc.splitTextToSize(field.label, CONTENT_WIDTH);
+
+      if (photoUrl) {
+        try {
+          const res = await fetch(photoUrl);
+          const buf = await res.arrayBuffer();
+          const b64 = Buffer.from(buf).toString("base64");
+          const imgProps = doc.getImageProperties(b64);
+          let imgH = (imgProps.height / imgProps.width) * CONTENT_WIDTH;
+          if (imgH > 120) imgH = 120;
+
+          const blockH = photoLabelLines.length * 4 + 3 + imgH + 8;
+          if (y + blockH > 280) {
+            doc.addPage();
+            y = MARGIN;
+          }
+          doc.text(photoLabelLines, MARGIN, y);
+          y += photoLabelLines.length * 4 + 3;
+          doc.addImage(
+            b64,
+            "JPEG",
+            MARGIN,
+            y,
+            CONTENT_WIDTH,
+            imgH,
+            undefined,
+            "FAST",
+          );
+          y += imgH + 8;
+          continue;
+        } catch {
+          // fall through to text fallback
+        }
+      }
+
+      // No URL or fetch failed — render as text
+      const fallbackLines = doc.splitTextToSize(
+        rawValue ? "(photo attached)" : "—",
+        CONTENT_WIDTH - 85,
+      );
+      const photoBlockH =
+        Math.max(photoLabelLines.length, fallbackLines.length) * 4 + 2;
+      if (y + photoBlockH > 280) {
+        doc.addPage();
+        y = MARGIN;
+      }
+      doc.text(photoLabelLines, MARGIN, y);
+      doc.setFont("helvetica", "normal");
+      doc.text(fallbackLines, MARGIN + 85, y);
+      y += photoBlockH;
+      continue;
+    }
+
+    // --- Non-photo fields ---
     let displayValue: string;
     if (field.type === "checkbox") {
       displayValue = rawValue ? "Yes" : "No";
-    } else if (field.type === "photo") {
-      displayValue = rawValue ? "(photo attached)" : "—";
     } else if (typeof rawValue === "string" && rawValue.trim()) {
       displayValue = rawValue;
     } else {
       displayValue = "—";
     }
 
-    const label = field.label.replace(/^\d+\.\s*/, ""); // strip numbering for cleaner PDF
+    const label = field.label; // preserve question numbering
     const labelWidth = 80;
 
     doc.setFont("helvetica", "bold");
@@ -222,8 +286,9 @@ export async function generateJobPdf(
     }
   }
 
-  // --- Photo Appendix ---
-  const photos = job.photos as PhotoMetadata[] | null;
+  // --- Photo Appendix — only photos not already embedded inline ---
+  const allPhotos = job.photos as PhotoMetadata[] | null;
+  const photos = allPhotos?.filter((p) => !inlinePhotoUrls.has(p.url)) ?? null;
   if (photos && photos.length > 0) {
     doc.addPage();
     y = MARGIN;
