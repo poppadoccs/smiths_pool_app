@@ -8,6 +8,7 @@ import {
   type FormField,
   type FormTemplate,
 } from "@/lib/forms";
+import { type PhotoMetadata } from "@/lib/photos";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -218,6 +219,64 @@ export async function generateJobPdf(
     }
     if (job.submittedAt) {
       doc.text(job.submittedAt.toLocaleDateString(), MARGIN, y);
+    }
+  }
+
+  // --- Photo Appendix ---
+  const photos = job.photos as PhotoMetadata[] | null;
+  if (photos && photos.length > 0) {
+    doc.addPage();
+    y = MARGIN;
+
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.text("Photo Appendix", MARGIN, y);
+    y += 6;
+
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.text("Job photos attached at time of submission", MARGIN, y);
+    y += 10;
+
+    const total = photos.length;
+    for (let i = 0; i < total; i++) {
+      const photo = photos[i];
+      try {
+        const response = await fetch(photo.url);
+        const arrayBuf = await response.arrayBuffer();
+        const base64 = Buffer.from(arrayBuf).toString("base64");
+
+        const imgProps = doc.getImageProperties(base64);
+        let imgHeight = (imgProps.height / imgProps.width) * CONTENT_WIDTH;
+        if (imgHeight > 180) imgHeight = 180;
+
+        if (y + imgHeight + 15 > 280) {
+          doc.addPage();
+          y = MARGIN;
+        }
+
+        doc.setFontSize(9);
+        doc.setFont("helvetica", "bold");
+        doc.text(`Photo ${i + 1} of ${total} — ${photo.filename}`, MARGIN, y);
+        y += 5;
+
+        doc.addImage(
+          base64,
+          "JPEG",
+          MARGIN,
+          y,
+          CONTENT_WIDTH,
+          imgHeight,
+          undefined,
+          "FAST",
+        );
+        y += imgHeight + 13;
+      } catch {
+        doc.setFontSize(9);
+        doc.setFont("helvetica", "italic");
+        doc.text(`[Photo could not be loaded: ${photo.filename}]`, MARGIN, y);
+        y += 8;
+      }
     }
   }
 
