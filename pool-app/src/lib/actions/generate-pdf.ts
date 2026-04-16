@@ -76,7 +76,31 @@ export async function generateJobPdf(
   doc.setDrawColor(0);
   doc.setLineWidth(0.5);
   doc.line(MARGIN, y, PAGE_WIDTH - MARGIN, y);
-  y += 8;
+  y += 5;
+
+  // --- Liability disclaimer (matches printed inspection form) ---
+  const disclaimer1 =
+    "**This inspection is for observed condition on the date & time of the inspection only. " +
+    "There are NO warranties or guarantees beyond this inspection, as to the longevity of items inspected.**";
+  const disclaimer2 =
+    "Only visible leaks are noted such as pump seal or filter housing. " +
+    "This inspection does not imply that the pool or pool/spa is not leaking or that " +
+    "if there is a visible leak that it is the only leak.";
+
+  doc.setFontSize(7.5);
+  doc.setFont("helvetica", "bold");
+  const d1Lines = doc.splitTextToSize(disclaimer1, CONTENT_WIDTH);
+  doc.text(d1Lines, MARGIN, y);
+  y += d1Lines.length * 3.5;
+
+  doc.setFont("helvetica", "normal");
+  const d2Lines = doc.splitTextToSize(disclaimer2, CONTENT_WIDTH);
+  doc.text(d2Lines, MARGIN, y);
+  y += d2Lines.length * 3.5 + 4;
+
+  doc.setLineWidth(0.2);
+  doc.line(MARGIN, y, PAGE_WIDTH - MARGIN, y);
+  y += 6;
 
   // --- Job title ---
   const jobTitle =
