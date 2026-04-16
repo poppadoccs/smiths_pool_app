@@ -203,15 +203,69 @@ async function main() {
 
       // --- Photo fields: embed inline ---
       if (field.type === "photo") {
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9);
+        const photoLabelLines = doc.splitTextToSize(field.label, CONTENT_WIDTH);
+
+        // Q108 "Additional Photos" — drain ALL remaining queue photos here
+        if (field.id === "108_additional_photos") {
+          const directUrl =
+            typeof rawValue === "string" && rawValue.startsWith("http")
+              ? rawValue
+              : null;
+          const allExtra: string[] = directUrl ? [directUrl] : [];
+          allExtra.push(...photosQueue.splice(0));
+
+          if (y + photoLabelLines.length * 4 + 4 > 280) {
+            doc.addPage();
+            y = MARGIN;
+          }
+          doc.text(photoLabelLines, MARGIN, y);
+          y += photoLabelLines.length * 4 + 4;
+
+          if (allExtra.length === 0) {
+            doc.setFont("helvetica", "normal");
+            doc.text("—", MARGIN, y);
+            y += 5;
+          } else {
+            for (const url of allExtra) {
+              try {
+                const res = await fetch(url);
+                const buf = await res.arrayBuffer();
+                const b64 = Buffer.from(buf).toString("base64");
+                const imgProps = doc.getImageProperties(b64);
+                let imgH = (imgProps.height / imgProps.width) * CONTENT_WIDTH;
+                if (imgH > 75) imgH = 75;
+                if (y + imgH + 8 > 280) {
+                  doc.addPage();
+                  y = MARGIN;
+                }
+                doc.addImage(
+                  b64,
+                  "JPEG",
+                  MARGIN,
+                  y,
+                  CONTENT_WIDTH,
+                  imgH,
+                  undefined,
+                  "FAST",
+                );
+                inlinePhotoUrls.add(url);
+                y += imgH + 6;
+              } catch {
+                // skip failed photo
+              }
+            }
+          }
+          continue;
+        }
+
+        // All other photo fields — consume one from queue as fallback
         const directUrl =
           typeof rawValue === "string" && rawValue.startsWith("http")
             ? rawValue
             : null;
         const photoUrl = directUrl ?? photosQueue.shift() ?? null;
-
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(9);
-        const photoLabelLines = doc.splitTextToSize(field.label, CONTENT_WIDTH);
 
         if (photoUrl) {
           try {
@@ -220,7 +274,7 @@ async function main() {
             const b64 = Buffer.from(buf).toString("base64");
             const imgProps = doc.getImageProperties(b64);
             let imgH = (imgProps.height / imgProps.width) * CONTENT_WIDTH;
-            if (imgH > 120) imgH = 120;
+            if (imgH > 75) imgH = 75;
 
             const blockH = photoLabelLines.length * 4 + 3 + imgH + 8;
             if (y + blockH > 280) {
@@ -346,82 +400,13 @@ async function main() {
     }
 
     // -------------------------------------------------------------------------
-    // Photo Appendix — only photos not already embedded inline
-    // -------------------------------------------------------------------------
-    const allPhotos = (job.photos as PhotoMetadata[] | null) ?? [];
-    const appendixPhotos = allPhotos.filter((p) => !inlinePhotoUrls.has(p.url));
-    if (appendixPhotos.length > 0) {
-      doc.addPage();
-      y = MARGIN;
-
-      doc.setFontSize(14);
-      doc.setFont("helvetica", "bold");
-      doc.text("Photo Appendix", MARGIN, y);
-      y += 6;
-
-      doc.setFontSize(9);
-      doc.setFont("helvetica", "normal");
-      doc.text(
-        "Additional job photos attached at time of submission",
-        MARGIN,
-        y,
-      );
-      y += 10;
-
-      const total = appendixPhotos.length;
-      for (let i = 0; i < total; i++) {
-        const photo = appendixPhotos[i];
-        try {
-          const response = await fetch(photo.url);
-          const arrayBuf = await response.arrayBuffer();
-          const base64 = Buffer.from(arrayBuf).toString("base64");
-
-          const imgProps = doc.getImageProperties(base64);
-          let imgHeight = (imgProps.height / imgProps.width) * CONTENT_WIDTH;
-          if (imgHeight > 180) imgHeight = 180;
-
-          if (y + imgHeight + 18 > 280) {
-            doc.addPage();
-            y = MARGIN;
-          }
-
-          doc.setFontSize(9);
-          doc.setFont("helvetica", "bold");
-          doc.text(`Photo ${i + 1} of ${total} — ${photo.filename}`, MARGIN, y);
-          y += 5;
-
-          doc.addImage(
-            base64,
-            "JPEG",
-            MARGIN,
-            y,
-            CONTENT_WIDTH,
-            imgHeight,
-            undefined,
-            "FAST",
-          );
-          y += imgHeight + 13;
-        } catch {
-          if (y + 8 > 280) {
-            doc.addPage();
-            y = MARGIN;
-          }
-          doc.setFontSize(9);
-          doc.setFont("helvetica", "italic");
-          doc.text(`[Photo could not be loaded: ${photo.filename}]`, MARGIN, y);
-          y += 8;
-        }
-      }
-    }
-
-    // -------------------------------------------------------------------------
     // Save to disk
     // -------------------------------------------------------------------------
     const pdfBytes = doc.output("arraybuffer");
     writeFileSync(OUTPUT_PATH, Buffer.from(pdfBytes));
     console.log(`\nPDF saved to: ${OUTPUT_PATH}`);
     console.log(
-      `  Pages: ${doc.getNumberOfPages()}  |  Inline photos: ${inlinePhotoUrls.size}  |  Appendix photos: ${appendixPhotos.length}`,
+      `  Pages: ${doc.getNumberOfPages()}  |  Inline photos: ${inlinePhotoUrls.size}`,
     );
   } finally {
     await db.$disconnect();
