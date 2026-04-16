@@ -1385,7 +1385,8 @@ For each field that has a clear, readable answer on the form, extract the value.
 ONLY return fields where you can clearly read the answer. Skip blank or illegible fields.
 
 Rules:
-- text / number / phone / email / date: return the written text exactly as written
+- text / number / phone / email: return the written text exactly as written
+- date: return in YYYY-MM-DD format (e.g. 2026-04-16) regardless of how it is written on the form
 - checkbox: return "true" if the box is checked/ticked, "false" if unchecked
 - radio / select: return the exact option text that is selected, circled, or checked — must match one of the provided options
 - signature: return the signer's name if readable

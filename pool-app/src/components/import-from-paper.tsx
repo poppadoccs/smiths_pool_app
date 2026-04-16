@@ -32,7 +32,7 @@ export function ImportFromPaper({
   onApply,
 }: {
   fields: FormField[];
-  onApply: (data: Record<string, string>) => void;
+  onApply: (data: Record<string, string | boolean>) => void;
 }) {
   const [state, setState] = useState<State>("idle");
   const [entries, setEntries] = useState<ExtractedEntry[]>([]);
@@ -120,9 +120,16 @@ export function ImportFromPaper({
   }
 
   function handleApply() {
-    const data: Record<string, string> = {};
+    const fieldMap = new Map(fields.map((f) => [f.id, f]));
+    const data: Record<string, string | boolean> = {};
     for (const entry of entries) {
-      if (entry.value.trim()) data[entry.fieldId] = entry.value.trim();
+      const field = fieldMap.get(entry.fieldId);
+      if (field?.type === "checkbox") {
+        // Convert AI string output to boolean — never skip false
+        data[entry.fieldId] = entry.value.trim().toLowerCase() === "true";
+      } else if (entry.value.trim()) {
+        data[entry.fieldId] = entry.value.trim();
+      }
     }
     onApply(data);
     setState("idle");

@@ -144,7 +144,7 @@ export function JobForm({
     };
   }, [watch, jobId, disabled]);
 
-  function handleImport(extracted: Record<string, string>) {
+  function handleImport(extracted: Record<string, string | boolean>) {
     // Use setValue per field so the watch() subscription fires and auto-save triggers.
     // reset() does not reliably fire watch() in RHF v7.
     for (const [id, value] of Object.entries(extracted)) {
