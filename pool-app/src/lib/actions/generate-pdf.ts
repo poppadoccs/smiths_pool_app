@@ -80,8 +80,8 @@ export async function generateJobPdf(
 
   // --- Liability disclaimer (matches printed inspection form) ---
   const disclaimer1 =
-    "**This inspection is for observed condition on the date & time of the inspection only. " +
-    "There are NO warranties or guarantees beyond this inspection, as to the longevity of items inspected.**";
+    "This inspection is for observed condition on the date & time of the inspection only. " +
+    "There are NO warranties or guarantees beyond this inspection, as to the longevity of items inspected.";
   const disclaimer2 =
     "Only visible leaks are noted such as pump seal or filter housing. " +
     "This inspection does not imply that the pool or pool/spa is not leaking or that " +
