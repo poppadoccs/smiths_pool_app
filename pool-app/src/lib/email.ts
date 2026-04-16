@@ -29,6 +29,14 @@ export function buildSubmissionEmail({
 
       if (field.type === "checkbox") {
         displayValue = value ? "Yes" : "No";
+      } else if (field.type === "photo") {
+        // Never render raw blob URLs — they're long and break layout.
+        // Render a short "View photo" link, or "—" if empty.
+        if (typeof value === "string" && value.trim() !== "") {
+          displayValue = `<a href="${escapeHtml(value)}" target="_blank" style="color: #0070f3; text-decoration: none;">View photo</a>`;
+        } else {
+          displayValue = '<span style="color: #999;">—</span>';
+        }
       } else if (typeof value === "string" && value.trim() !== "") {
         displayValue = escapeHtml(value);
       } else {
@@ -37,10 +45,10 @@ export function buildSubmissionEmail({
 
       return `
         <tr>
-          <td style="padding: 8px 12px; border-bottom: 1px solid #e5e5e5; font-weight: 500; width: 40%; vertical-align: top;">
+          <td style="padding: 8px 12px; border-bottom: 1px solid #e5e5e5; font-weight: 500; width: 40%; vertical-align: top; word-break: break-word; overflow-wrap: break-word;">
             ${escapeHtml(field.label)}
           </td>
-          <td style="padding: 8px 12px; border-bottom: 1px solid #e5e5e5;">
+          <td style="padding: 8px 12px; border-bottom: 1px solid #e5e5e5; word-break: break-word; overflow-wrap: break-word;">
             ${displayValue}
           </td>
         </tr>`;
@@ -63,7 +71,7 @@ export function buildSubmissionEmail({
                 alt="${escapeHtml(photo.filename)}"
                 style="width: 150px; height: 150px; object-fit: cover; border-radius: 8px; border: 1px solid #e5e5e5;"
               />
-            </a>`
+            </a>`,
             )
             .join("")}
         </div>
@@ -92,7 +100,7 @@ export function buildSubmissionEmail({
     <h2 style="font-size: 18px; margin: 0 0 12px 0; color: #333;">
       Form Details
     </h2>
-    <table style="width: 100%; border-collapse: collapse; font-size: 15px;">
+    <table style="width: 100%; border-collapse: collapse; font-size: 15px; table-layout: fixed;">
       ${formRows}
     </table>
 
