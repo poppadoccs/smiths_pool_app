@@ -73,6 +73,14 @@ export function ImportFromPaper({
   }
 
   async function handlePdf(file: File) {
+    const MAX_PDF_BYTES = 7 * 1024 * 1024; // 7 MB — safe under 10 MB action limit after base64 overhead
+    if (file.size > MAX_PDF_BYTES) {
+      setError(
+        `PDF is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum size is 7 MB.`,
+      );
+      setState("error");
+      return;
+    }
     setState("scanning");
     try {
       const base64 = await fileToBase64(file);

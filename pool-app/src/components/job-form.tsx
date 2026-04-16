@@ -151,6 +151,7 @@ export function JobForm({
       setValue(id as keyof FormData, value, {
         shouldDirty: true,
         shouldTouch: true,
+        shouldValidate: true,
       });
     }
   }
