@@ -85,11 +85,12 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260416-3w4 | finish-proof-pass: E2E green, branding report | 2026-04-16 | d00c915 | [260416-3w4](./quick/260416-3w4-finish-proof-pass-e2e-green-branding-fin/) |
+| 260416-4tw | real-environment proof: env vars, tests, import-from-paper E2E, persistence, branding | 2026-04-16 | 0668e2a | [260416-4tw](./quick/260416-4tw-real-environment-proof-env-vars-tests-im/) |
 
-Last activity: 2026-04-16 — Completed quick task 260416-3w4: E2E tests green (2/2), import-from-paper feature committed
+Last activity: 2026-04-16 — Completed quick task 260416-4tw: real-env proof passed (51 unit tests, 2 E2E, real Gemini extraction + persistence, real logo + app icons)
 
 ## Session Continuity
 
 Last session: 2026-04-16
-Stopped at: Quick task 260416-3w4 complete — import-from-paper done, E2E green
+Stopped at: Quick task 260416-4tw complete — real-env proof done, 2 blockers remain (scan-as-photo not implemented, email delivery unverified)
 Resume file: None
