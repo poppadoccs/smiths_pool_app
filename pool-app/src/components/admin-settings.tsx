@@ -275,12 +275,12 @@ export function AdminSettings({
                       </div>
                     )}
 
-                    <div className="mt-2 flex gap-2">
+                    <div className="mt-2 flex flex-wrap gap-2">
                       {job.status === "SUBMITTED" && (
                         <Button
                           variant="outline"
                           size="sm"
-                          className="min-h-[40px] flex-1"
+                          className="min-h-[40px] flex-1 basis-[calc(50%-0.25rem)] sm:basis-0"
                           disabled={isBusy}
                           onClick={async () => {
                             setBusyJob(job.id);
@@ -320,7 +320,7 @@ export function AdminSettings({
                         <Button
                           variant="outline"
                           size="sm"
-                          className="min-h-[40px] flex-1"
+                          className="min-h-[40px] flex-1 basis-[calc(50%-0.25rem)] sm:basis-0"
                           disabled={isBusy}
                           onClick={() => setReopenDialogJob(job.id)}
                         >
@@ -332,7 +332,7 @@ export function AdminSettings({
                         <Button
                           variant="outline"
                           size="sm"
-                          className="min-h-[40px] flex-1"
+                          className="min-h-[40px] flex-1 basis-[calc(50%-0.25rem)] sm:basis-0"
                           disabled={isBusy}
                           onClick={() => setArchiveDialogJob(job.id)}
                         >
@@ -343,7 +343,7 @@ export function AdminSettings({
                       <Button
                         variant="outline"
                         size="sm"
-                        className="min-h-[40px] flex-1 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                        className="min-h-[40px] flex-1 basis-[calc(50%-0.25rem)] border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 sm:basis-0"
                         disabled={isBusy}
                         onClick={() => setDeleteDialogJob(job.id)}
                       >
