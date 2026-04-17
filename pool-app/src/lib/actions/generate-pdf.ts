@@ -40,8 +40,9 @@ function fitPhoto(props: { width: number; height: number }): {
     imgH = MAX_H;
     imgW = imgH / ar;
   }
-  // Floor for portrait so it doesn't become a sliver.
-  if (imgW < MIN_W) {
+  // Floor for portrait so it doesn't become a sliver — only when widening
+  // won't push height back over MAX_H (very tall portraits stay narrow).
+  if (imgW < MIN_W && ar * MIN_W <= MAX_H) {
     imgW = MIN_W;
     imgH = ar * imgW;
   }

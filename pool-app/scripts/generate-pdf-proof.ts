@@ -64,7 +64,8 @@ function fitPhoto(props: { width: number; height: number }): {
     imgH = MAX_H;
     imgW = imgH / ar;
   }
-  if (imgW < MIN_W) {
+  // Only apply MIN_W when widening won't push height back over MAX_H.
+  if (imgW < MIN_W && ar * MIN_W <= MAX_H) {
     imgW = MIN_W;
     imgH = ar * imgW;
   }
