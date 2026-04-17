@@ -162,9 +162,11 @@ export async function generateJobPdf(
   let currentSection = "";
   const inlinePhotoUrls = new Set<string>();
 
-  // Build a fallback queue for photo fields whose formData value is not a blob URL.
-  // Jobs submitted before blob URLs were stored in formData (e.g. pre-260416-krc)
-  // have filenames or empty strings in photo fields — fall back to job.photos in order.
+  // Queue of gallery-only photos — those uploaded via PhotoUpload that aren't
+  // bound to any photo field via formData. Consumed only by Q108 "Additional
+  // Photos" (and the safety drain for templates without Q108). Non-Q108 photo
+  // fields render strictly the URL in their own formData entry, so a gallery
+  // photo can never masquerade as the answer to an unrelated question.
   const formDataPhotoUrls = new Set<string>(
     template.fields
       .filter((f) => f.type === "photo")
@@ -255,12 +257,14 @@ export async function generateJobPdf(
         continue;
       }
 
-      // All other photo fields — consume one from queue as fallback
+      // All other photo fields render only the URL explicitly bound to this
+      // field via formData. Gallery-only photos stay queued for Q108 so they
+      // never appear as if answering a different question.
       const directUrl =
         typeof rawValue === "string" && rawValue.startsWith("http")
           ? rawValue
           : null;
-      const photoUrl = directUrl ?? photosQueue.shift() ?? null;
+      const photoUrl = directUrl;
 
       if (photoUrl) {
         try {
