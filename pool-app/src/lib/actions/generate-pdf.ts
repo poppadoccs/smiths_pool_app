@@ -499,8 +499,8 @@ export async function generateJobPdf(
     }
 
     y += 5;
-    doc.setLineWidth(0.3);
-    doc.line(MARGIN, y, PAGE_WIDTH - MARGIN, y);
+    // Divider stroke removed — bare whitespace preserves the same y-offset
+    // to the "Worker Signature" heading without a visible rule.
     y += 8;
 
     doc.setFontSize(11);
