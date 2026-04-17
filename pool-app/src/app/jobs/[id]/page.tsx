@@ -10,10 +10,16 @@ import { LocalTime } from "@/components/local-time";
 import type { Metadata } from "next";
 import { PhotoUpload } from "@/components/photo-upload";
 import { PhotoGallery } from "@/components/photo-gallery";
+import { PhotoAssignmentsEditor } from "@/components/photo-assignments";
 import type { PhotoMetadata } from "@/lib/photos";
 import { JobForm } from "@/components/job-form";
 import { SubmitSection } from "@/components/submit-section";
-import { DEFAULT_TEMPLATE, type FormData, type FormField, type FormTemplate } from "@/lib/forms";
+import {
+  DEFAULT_TEMPLATE,
+  type FormData,
+  type FormField,
+  type FormTemplate,
+} from "@/lib/forms";
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -52,7 +58,7 @@ export default async function JobDetailPage({ params }: Props) {
         name: job.template.name,
         version: 1,
         fields: (job.template.fields as FormField[]).sort(
-          (a, b) => a.order - b.order
+          (a, b) => a.order - b.order,
         ),
       }
     : DEFAULT_TEMPLATE;
@@ -60,10 +66,7 @@ export default async function JobDetailPage({ params }: Props) {
   return (
     <main className="mx-auto max-w-2xl px-4 pt-6 pb-24">
       <Link href="/">
-        <Button
-          variant="ghost"
-          className="min-h-[48px] gap-2 text-base"
-        >
+        <Button variant="ghost" className="min-h-[48px] gap-2 text-base">
           <ArrowLeft className="size-5" />
           Back to Jobs
         </Button>
@@ -93,7 +96,7 @@ export default async function JobDetailPage({ params }: Props) {
 
       <div className="space-y-4">
         <Card>
-          <CardContent className="p-4 space-y-4">
+          <CardContent className="space-y-4 p-4">
             <h2 className="text-lg font-semibold text-zinc-900">Photos</h2>
             <PhotoGallery
               photos={job.photos as PhotoMetadata[]}
@@ -106,11 +109,22 @@ export default async function JobDetailPage({ params }: Props) {
                 <PhotoUpload jobId={job.id} />
               </>
             )}
+            {!isSubmitted && (job.photos as PhotoMetadata[]).length > 0 && (
+              <>
+                <Separator />
+                <PhotoAssignmentsEditor
+                  jobId={job.id}
+                  photos={job.photos as PhotoMetadata[]}
+                  template={template}
+                  initialFormData={(job.formData as FormData) ?? null}
+                />
+              </>
+            )}
           </CardContent>
         </Card>
 
         <Card>
-          <CardContent className="p-4 space-y-4">
+          <CardContent className="space-y-4 p-4">
             <h2 className="text-lg font-semibold text-zinc-900">Form</h2>
             <JobForm
               jobId={job.id}
