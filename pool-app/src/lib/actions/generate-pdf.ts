@@ -241,10 +241,9 @@ export async function generateJobPdf(
         // Defer the label draw so it paginates together with the first
         // image that successfully renders — avoids a stranded "Additional
         // Photos" heading at the bottom of a page with its images on the
-        // next page. Failures before the first success are collapsed into
-        // a single fallback line rendered under the label (if no image
-        // ever succeeds) so we don't strand the label next to a lone
-        // error marker only to have the real photos land on a later page.
+        // next page. Failures before the first success are buffered and
+        // drawn alongside the label once a success lands, so no failed
+        // photo is silently dropped from the PDF.
         let labelDrawn = false;
         let preLabelFailures = 0;
         for (const url of allExtra) {
@@ -255,7 +254,8 @@ export async function generateJobPdf(
             const imgProps = doc.getImageProperties(b64);
             const { imgW, imgH } = fitPhoto(imgProps);
             const imgX = MARGIN + (CONTENT_WIDTH - imgW) / 2;
-            const blockH = (labelDrawn ? 0 : labelH) + imgH + 8;
+            const preH = labelDrawn ? 0 : labelH + preLabelFailures * 5;
+            const blockH = preH + imgH + 8;
             if (y + blockH > 280) {
               doc.addPage();
               y = MARGIN;
@@ -265,6 +265,15 @@ export async function generateJobPdf(
               doc.setFontSize(9);
               doc.text(photoLabelLines, MARGIN, y);
               y += labelH;
+              if (preLabelFailures > 0) {
+                doc.setFont("helvetica", "italic");
+                doc.setFontSize(8);
+                for (let i = 0; i < preLabelFailures; i++) {
+                  doc.text("[photo could not be loaded]", MARGIN, y);
+                  y += 5;
+                }
+                preLabelFailures = 0;
+              }
               labelDrawn = true;
             }
             doc.addImage(b64, "JPEG", imgX, y, imgW, imgH, undefined, "FAST");
@@ -272,8 +281,9 @@ export async function generateJobPdf(
           } catch {
             if (!labelDrawn) {
               // Don't draw the label yet — a later fetch may succeed and
-              // carry the label with it. Track the failure for the all-
-              // failed fallback below.
+              // carry the label + these failure markers with it. Track
+              // the count for the combined draw (or the all-failed
+              // fallback if no image ever succeeds).
               preLabelFailures++;
               continue;
             }
