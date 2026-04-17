@@ -119,19 +119,11 @@ export async function reopenJob(
     return { success: false, error: "Incorrect PIN" };
   }
 
-  const job = await db.job.findUnique({ where: { id: jobId } });
-  if (!job) {
-    return { success: false, error: "Job not found" };
-  }
-  if (job.status !== "SUBMITTED") {
-    return { success: false, error: "Only submitted jobs can be reopened" };
-  }
-
-  // Move back to DRAFT and clear submission fingerprint so the status badge,
-  // "Submitted by" header, and signature block all reflect a fresh draft.
-  // Photos and formData are preserved so the office only has to edit what changed.
-  await db.job.update({
-    where: { id: jobId },
+  // Atomic transition: only flip a currently-SUBMITTED row. Guards against a
+  // concurrent archive/delete racing between a read check and the write, and
+  // narrows the window where a stale submit-in-progress could be undone.
+  const updated = await db.job.updateMany({
+    where: { id: jobId, status: "SUBMITTED" },
     data: {
       status: "DRAFT",
       submittedBy: null,
@@ -139,6 +131,9 @@ export async function reopenJob(
       workerSignature: null,
     },
   });
+  if (updated.count === 0) {
+    return { success: false, error: "Only submitted jobs can be reopened" };
+  }
 
   revalidatePath("/");
   revalidatePath("/admin");
