@@ -21,6 +21,33 @@ const PAGE_WIDTH = 210; // A4 mm
 const MARGIN = 15;
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
 
+// Fits an image inside a balanced box so portrait and landscape photos feel
+// consistent — landscape never fills the full content width, portrait never
+// shrinks below a readable minimum. Aspect ratio always preserved.
+function fitPhoto(props: { width: number; height: number }): {
+  imgW: number;
+  imgH: number;
+} {
+  const MAX_W = 130; // mm — keeps landscape from dominating the page
+  const MAX_H = 95; // mm — allows slightly taller portraits than the old 75
+  const MIN_W = 70; // mm — prevents tall portraits from becoming slivers
+  const ar = props.height / props.width; // >1 = portrait, <1 = landscape
+
+  // Start at the max width, then scale down if height exceeds MAX_H.
+  let imgW = MAX_W;
+  let imgH = ar * imgW;
+  if (imgH > MAX_H) {
+    imgH = MAX_H;
+    imgW = imgH / ar;
+  }
+  // Floor for portrait so it doesn't become a sliver.
+  if (imgW < MIN_W) {
+    imgW = MIN_W;
+    imgH = ar * imgW;
+  }
+  return { imgW, imgH };
+}
+
 export async function generateJobPdf(
   jobId: string,
 ): Promise<{ success: boolean; data?: string; error?: string }> {
@@ -202,13 +229,7 @@ export async function generateJobPdf(
               const buf = await res.arrayBuffer();
               const b64 = Buffer.from(buf).toString("base64");
               const imgProps = doc.getImageProperties(b64);
-              const ar = imgProps.height / imgProps.width;
-              let imgW = CONTENT_WIDTH;
-              let imgH = ar * imgW;
-              if (imgH > 75) {
-                imgH = 75;
-                imgW = imgH / ar;
-              }
+              const { imgW, imgH } = fitPhoto(imgProps);
               const imgX = MARGIN + (CONTENT_WIDTH - imgW) / 2;
               if (y + imgH + 8 > 280) {
                 doc.addPage();
@@ -246,13 +267,7 @@ export async function generateJobPdf(
           const buf = await res.arrayBuffer();
           const b64 = Buffer.from(buf).toString("base64");
           const imgProps = doc.getImageProperties(b64);
-          const ar = imgProps.height / imgProps.width;
-          let imgW = CONTENT_WIDTH;
-          let imgH = ar * imgW;
-          if (imgH > 75) {
-            imgH = 75;
-            imgW = imgH / ar;
-          }
+          const { imgW, imgH } = fitPhoto(imgProps);
           const imgX = MARGIN + (CONTENT_WIDTH - imgW) / 2;
 
           const blockH = photoLabelLines.length * 4 + 3 + imgH + 8;
@@ -341,13 +356,7 @@ export async function generateJobPdf(
       const buf = await res.arrayBuffer();
       const b64 = Buffer.from(buf).toString("base64");
       const imgProps = doc.getImageProperties(b64);
-      const ar = imgProps.height / imgProps.width;
-      let imgW = CONTENT_WIDTH;
-      let imgH = ar * imgW;
-      if (imgH > 75) {
-        imgH = 75;
-        imgW = imgH / ar;
-      }
+      const { imgW, imgH } = fitPhoto(imgProps);
       const imgX = MARGIN + (CONTENT_WIDTH - imgW) / 2;
       if (y + imgH + 8 > 280) {
         doc.addPage();

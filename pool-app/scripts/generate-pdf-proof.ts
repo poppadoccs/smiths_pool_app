@@ -45,6 +45,32 @@ const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
 const OUTPUT_PATH =
   "C:\\Users\\renea\\Downloads\\Kimberly Hennessy-report (2).pdf";
 
+// Fits an image inside a balanced box so portrait and landscape photos feel
+// consistent — landscape never fills the full content width, portrait never
+// shrinks below a readable minimum. Aspect ratio always preserved.
+// MUST stay identical to fitPhoto in src/lib/actions/generate-pdf.ts.
+function fitPhoto(props: { width: number; height: number }): {
+  imgW: number;
+  imgH: number;
+} {
+  const MAX_W = 130; // mm — keeps landscape from dominating the page
+  const MAX_H = 95; // mm — allows slightly taller portraits than the old 75
+  const MIN_W = 70; // mm — prevents tall portraits from becoming slivers
+  const ar = props.height / props.width; // >1 = portrait, <1 = landscape
+
+  let imgW = MAX_W;
+  let imgH = ar * imgW;
+  if (imgH > MAX_H) {
+    imgH = MAX_H;
+    imgW = imgH / ar;
+  }
+  if (imgW < MIN_W) {
+    imgW = MIN_W;
+    imgH = ar * imgW;
+  }
+  return { imgW, imgH };
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -241,8 +267,8 @@ async function main() {
                 const buf = await res.arrayBuffer();
                 const b64 = Buffer.from(buf).toString("base64");
                 const imgProps = doc.getImageProperties(b64);
-                let imgH = (imgProps.height / imgProps.width) * CONTENT_WIDTH;
-                if (imgH > 75) imgH = 75;
+                const { imgW, imgH } = fitPhoto(imgProps);
+                const imgX = MARGIN + (CONTENT_WIDTH - imgW) / 2;
                 if (y + imgH + 8 > 280) {
                   doc.addPage();
                   y = MARGIN;
@@ -250,9 +276,9 @@ async function main() {
                 doc.addImage(
                   b64,
                   "JPEG",
-                  MARGIN,
+                  imgX,
                   y,
-                  CONTENT_WIDTH,
+                  imgW,
                   imgH,
                   undefined,
                   "FAST",
@@ -280,8 +306,8 @@ async function main() {
             const buf = await res.arrayBuffer();
             const b64 = Buffer.from(buf).toString("base64");
             const imgProps = doc.getImageProperties(b64);
-            let imgH = (imgProps.height / imgProps.width) * CONTENT_WIDTH;
-            if (imgH > 75) imgH = 75;
+            const { imgW, imgH } = fitPhoto(imgProps);
+            const imgX = MARGIN + (CONTENT_WIDTH - imgW) / 2;
 
             const blockH = photoLabelLines.length * 4 + 3 + imgH + 8;
             if (y + blockH > 280) {
@@ -290,16 +316,7 @@ async function main() {
             }
             doc.text(photoLabelLines, MARGIN, y);
             y += photoLabelLines.length * 4 + 3;
-            doc.addImage(
-              b64,
-              "JPEG",
-              MARGIN,
-              y,
-              CONTENT_WIDTH,
-              imgH,
-              undefined,
-              "FAST",
-            );
+            doc.addImage(b64, "JPEG", imgX, y, imgW, imgH, undefined, "FAST");
             y += imgH + 8;
             inlinePhotoUrls.add(photoUrl);
             continue;
