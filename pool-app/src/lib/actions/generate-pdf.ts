@@ -136,17 +136,6 @@ export async function generateJobPdf(
   doc.text(jobTitle, MARGIN, y);
   y += 6;
 
-  if (job.submittedBy || job.submittedAt) {
-    doc.setFontSize(9);
-    doc.setFont("helvetica", "normal");
-    const parts: string[] = [];
-    if (job.submittedBy) parts.push(`Submitted by: ${job.submittedBy}`);
-    if (job.submittedAt)
-      parts.push(`Date: ${job.submittedAt.toLocaleDateString()}`);
-    doc.text(parts.join("  |  "), MARGIN, y);
-    y += 8;
-  }
-
   // --- Form fields ---
   doc.setFontSize(10);
   let currentSection = "";
@@ -529,7 +518,7 @@ export async function generateJobPdf(
     if (job.submittedBy) {
       doc.setFontSize(9);
       doc.setFont("helvetica", "normal");
-      doc.text(job.submittedBy, MARGIN, y);
+      doc.text(`Submitted by: ${job.submittedBy}`, MARGIN, y);
       y += 4;
     }
     if (job.submittedAt) {
