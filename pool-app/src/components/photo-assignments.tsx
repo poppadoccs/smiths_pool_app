@@ -10,9 +10,26 @@ import {
 } from "@/lib/actions/photo-assignments";
 import type { PhotoMetadata } from "@/lib/photos";
 import type { FormData, FormField, FormTemplate } from "@/lib/forms";
+import {
+  ADDITIONAL_PHOTOS_FIELD_ID,
+  MULTI_PHOTO_FIELD_IDS,
+} from "@/lib/multi-photo";
 
-const Q108_ID = "108_additional_photos";
 const UNASSIGNED = "UNASSIGNED";
+
+// A target is safe to offer in this legacy single-URL editor ONLY if the
+// backend's savePhotoAssignments would accept it. That means: template
+// photo field, not Q108, and not a multi-photo map-backed owner
+// (Q5/Q16/Q25/Q40/Q71). Keeping this predicate local and explicit makes
+// the UI/backend contract legible. Remarks-photo synthetic owner ids
+// (`*_remarks_notes_photos`) are never template fields, so no extra
+// guard is needed for them.
+function isLegacySingleSlotPhotoField(f: FormField): boolean {
+  if (f.type !== "photo") return false;
+  if (f.id === ADDITIONAL_PHOTOS_FIELD_ID) return false;
+  if (MULTI_PHOTO_FIELD_IDS.has(f.id)) return false;
+  return true;
+}
 
 export function PhotoAssignmentsEditor({
   jobId,
@@ -31,13 +48,15 @@ export function PhotoAssignmentsEditor({
   const photoFields = useMemo(
     () =>
       template.fields
-        .filter((f): f is FormField => f.type === "photo" && f.id !== Q108_ID)
+        .filter(isLegacySingleSlotPhotoField)
         .sort((a, b) => a.order - b.order),
     [template.fields],
   );
 
   // Derive initial per-photo target from formData: if a photo's URL is the
-  // current value of a non-Q108 photo field, preselect that field.
+  // current legacy-mirror value of a legacy single-slot photo field,
+  // preselect that field. Map-backed owners are intentionally not
+  // reflected here — they are managed by their dedicated action and UI.
   const initialAssignments = useMemo<PhotoAssignments>(() => {
     const fd = initialFormData ?? {};
     const urlToField = new Map<string, string>();
@@ -78,9 +97,10 @@ export function PhotoAssignmentsEditor({
           Assign photos to questions
         </h3>
         <p className="text-sm text-zinc-600">
-          Pick the question each photo belongs to. Photos left as
-          &ldquo;Unassigned&rdquo; or set to &ldquo;Additional photos&rdquo;
-          appear at the end of the PDF under Q108.
+          Pick the single-slot question each photo belongs to. Multi-photo
+          questions (Q5/Q16/Q25/Q40/Q71), Q108, and remarks sections are managed
+          from their own controls in the form below. Photos left as
+          &ldquo;Unassigned&rdquo; appear at the end of the PDF under Q108.
         </p>
       </div>
 
@@ -109,7 +129,6 @@ export function PhotoAssignmentsEditor({
                     {truncate(f.label, 40)}
                   </option>
                 ))}
-                <option value={Q108_ID}>Additional photos (Q108)</option>
               </select>
             </div>
           );
