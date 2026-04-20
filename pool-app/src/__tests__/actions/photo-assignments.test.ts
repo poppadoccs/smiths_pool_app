@@ -61,6 +61,33 @@ describe("assignMultiFieldPhotos", () => {
     expect(saved[REVIEWED_FLAG]).toBe(true);
   });
 
+  it("accepts a payload exactly at cap for every multi-photo field", async () => {
+    // Exercise every entry in MULTI_PHOTO_CAPS at its exact locked cap.
+    // Catches a SUT with a stale hardcoded cap that happens to be lower:
+    // the within-cap and over-cap tests only probe one field at a relative
+    // offset, so a drift between code and MULTI_PHOTO_CAPS would slip past.
+    for (const [fieldId, cap] of Object.entries(MULTI_PHOTO_CAPS)) {
+      vi.clearAllMocks();
+      vi.mocked(db.job.updateMany).mockResolvedValue({ count: 1 } as never);
+
+      const urls = Array.from({ length: cap }, (_, i) => `u-${fieldId}-${i}`);
+      vi.mocked(db.job.findUnique).mockResolvedValue({
+        id: "job-1",
+        status: "DRAFT",
+        formData: null,
+        photos: urls.map(photoMeta),
+      } as never);
+
+      const res = await assignMultiFieldPhotos("job-1", fieldId, urls);
+      expect(res).toEqual({ success: true });
+
+      const saved = writtenFormData();
+      expect(saved[RESERVED_PHOTO_MAP_KEY]).toEqual({ [fieldId]: urls });
+      expect(saved[fieldId]).toBe(urls[0]);
+      expect(saved[REVIEWED_FLAG]).toBe(true);
+    }
+  });
+
   it("rejects a non-multi-photo field id", async () => {
     const res = await assignMultiFieldPhotos("job-1", "customer_name", ["u1"]);
     expect(res.success).toBe(false);
@@ -118,6 +145,16 @@ describe("assignMultiFieldPhotos", () => {
     const res = await assignMultiFieldPhotos("job-1", Q5, ["u1"]);
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/no longer editable/i);
+
+    // Prove the guarded write path was actually attempted — not short-circuited
+    // before the DB. A SUT that returned "no longer editable" without issuing
+    // the DRAFT-guarded updateMany would silently pass the bare error check
+    // above; this assertion forces the race-guard to be exercised.
+    expect(db.job.updateMany).toHaveBeenCalledTimes(1);
+    const updateArg = vi.mocked(db.job.updateMany).mock.calls[0]![0] as {
+      where: { id: string; status: string };
+    };
+    expect(updateArg.where).toEqual({ id: "job-1", status: "DRAFT" });
   });
 
   it("deduplicates URLs while preserving first-occurrence order", async () => {
