@@ -36,6 +36,11 @@ import { saveFormData } from "@/lib/actions/forms";
 import { StickyFormNav } from "@/components/sticky-form-nav";
 import { ImportFromPaper } from "@/components/import-from-paper";
 import { RemarksPhotosField } from "@/components/remarks-photos-field";
+import { MultiPhotoField } from "@/components/multi-photo-field";
+import {
+  ADDITIONAL_PHOTOS_FIELD_ID,
+  MULTI_PHOTO_FIELD_IDS,
+} from "@/lib/multi-photo";
 import type { PhotoMetadata } from "@/lib/photos";
 
 // --- localStorage draft helpers ---
@@ -548,6 +553,25 @@ function FieldRenderer({
       );
 
     case "photo":
+      // Map-backed photo owners (multi-photo Q5/Q16/Q25/Q40/Q71 + Q108)
+      // use a dedicated companion UI that supports gallery pick, capture,
+      // previews, and remove — all routed through their dedicated server
+      // actions. True single-slot photo fields (e.g. pool_hero_photo)
+      // keep the original PhotoFieldInput so RHF still owns their value.
+      if (
+        MULTI_PHOTO_FIELD_IDS.has(field.id) ||
+        field.id === ADDITIONAL_PHOTOS_FIELD_ID
+      ) {
+        return (
+          <MultiPhotoField
+            jobId={jobId}
+            field={field}
+            jobPhotos={jobPhotos}
+            formData={serverFormData}
+            disabled={disabled}
+          />
+        );
+      }
       return (
         <PhotoFieldInput
           field={field}
