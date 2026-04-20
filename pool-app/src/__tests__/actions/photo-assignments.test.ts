@@ -397,3 +397,126 @@ describe("assignAdditionalPhotos (Q108)", () => {
     expect(saved.customer_name).toBe("Alex");
   });
 });
+
+describe("one-photo-one-owner enforcement", () => {
+  it("assigning a URL to Q108 steals it from Q5 and updates Q5's legacy mirror", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [Q5]: "shared", // pre-existing Q5 legacy mirror
+        [RESERVED_PHOTO_MAP_KEY]: { [Q5]: ["shared", "q5-only"] },
+      },
+      photos: [photoMeta("shared"), photoMeta("q5-only")],
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", ["shared"]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    const map = saved[RESERVED_PHOTO_MAP_KEY] as Record<string, unknown>;
+    // Q5 no longer owns "shared"; Q108 does.
+    expect(map[Q5]).toEqual(["q5-only"]);
+    expect(map[Q108]).toEqual(["shared"]);
+    // Q5 legacy mirror was "shared"; post-steal it tracks urls[0] of the
+    // remaining list, not the stolen URL.
+    expect(saved[Q5]).toBe("q5-only");
+  });
+
+  it("assigning a URL to Q5 steals it from Q108 (no Q108 mirror to update)", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [RESERVED_PHOTO_MAP_KEY]: { [Q108]: ["shared", "q108-only"] },
+      },
+      photos: [photoMeta("shared"), photoMeta("q108-only")],
+    } as never);
+
+    const res = await assignMultiFieldPhotos("job-1", Q5, ["shared"]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    const map = saved[RESERVED_PHOTO_MAP_KEY] as Record<string, unknown>;
+    expect(map[Q5]).toEqual(["shared"]);
+    expect(map[Q108]).toEqual(["q108-only"]);
+    expect(saved[Q5]).toBe("shared");
+    // Q108 has no legacy mirror — stealing from it never touches a
+    // formData[Q108] key.
+    expect(saved).not.toHaveProperty(Q108);
+  });
+
+  it("stealing preserves sibling assignments that weren't involved in the move", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [Q16]: "a",
+        [RESERVED_PHOTO_MAP_KEY]: {
+          [Q5]: ["shared"],
+          [Q16]: ["a", "b"],
+        },
+      },
+      photos: [photoMeta("shared"), photoMeta("a"), photoMeta("b")],
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", ["shared"]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    const map = saved[RESERVED_PHOTO_MAP_KEY] as Record<string, unknown>;
+    // Q5 lost its only URL — entry deleted, mirror cleared.
+    expect(map).not.toHaveProperty(Q5);
+    expect(saved[Q5]).toBe("");
+    // Q16 was never involved in the move — its map entry AND its mirror
+    // must remain exactly as they were.
+    expect(map[Q16]).toEqual(["a", "b"]);
+    expect(saved[Q16]).toBe("a");
+    // Q108 new owner.
+    expect(map[Q108]).toEqual(["shared"]);
+  });
+
+  it("reviewed flag stays true after a cross-owner move (Q5 → Q16)", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [Q5]: "shared",
+        [RESERVED_PHOTO_MAP_KEY]: { [Q5]: ["shared"] },
+      },
+      photos: [photoMeta("shared")],
+    } as never);
+
+    const res = await assignMultiFieldPhotos("job-1", Q16, ["shared"]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    expect(saved[REVIEWED_FLAG]).toBe(true);
+    const map = saved[RESERVED_PHOTO_MAP_KEY] as Record<string, unknown>;
+    expect(map[Q16]).toEqual(["shared"]);
+    expect(map).not.toHaveProperty(Q5);
+    // Q5 mirror cleared after full steal.
+    expect(saved[Q5]).toBe("");
+    expect(saved[Q16]).toBe("shared");
+  });
+
+  it("no-op when the incoming URL is not owned elsewhere (regression guard)", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [RESERVED_PHOTO_MAP_KEY]: { [Q5]: ["a", "b"] },
+      },
+      photos: [photoMeta("a"), photoMeta("b"), photoMeta("c")],
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", ["c"]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    const map = saved[RESERVED_PHOTO_MAP_KEY] as Record<string, unknown>;
+    // Q5 wasn't touched by stealing — preserved verbatim.
+    expect(map[Q5]).toEqual(["a", "b"]);
+    expect(map[Q108]).toEqual(["c"]);
+  });
+});

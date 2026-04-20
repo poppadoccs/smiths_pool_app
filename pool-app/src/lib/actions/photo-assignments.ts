@@ -15,6 +15,53 @@ const Q108_ID = "108_additional_photos";
 const UNASSIGNED = "UNASSIGNED";
 const REVIEWED_FLAG = "__photoAssignmentsReviewed";
 
+// One-photo-one-owner enforcement (locked product rule, 2026-04-20).
+// Removes every URL in `incomingUrls` from OTHER field entries in the
+// shared __photoAssignmentsByField map, and keeps the legacy single-URL
+// mirror consistent for multi-photo fields that lose a URL.
+//
+// Called by assignMultiFieldPhotos and assignAdditionalPhotos just before
+// they write their target field's new entry. Q108 has no legacy mirror
+// (by design), so when Q108 is the loser only the map is updated.
+//
+// Mutates `currentMap` and `next` in place — both are local working
+// copies built by the caller from the fresh DB read.
+function stealOneOwner(
+  currentMap: Record<string, unknown>,
+  next: FormData,
+  targetFieldId: string,
+  incomingUrls: string[],
+): void {
+  if (incomingUrls.length === 0) return;
+  const incomingSet = new Set(incomingUrls);
+  for (const [fid, entry] of Object.entries(currentMap)) {
+    if (fid === targetFieldId) continue;
+    if (!Array.isArray(entry)) continue;
+    const original = entry as unknown[];
+    let overlaps = false;
+    for (const u of original) {
+      if (typeof u === "string" && incomingSet.has(u)) {
+        overlaps = true;
+        break;
+      }
+    }
+    if (!overlaps) continue;
+    const filtered = original.filter(
+      (u): u is string => typeof u === "string" && !incomingSet.has(u),
+    );
+    if (filtered.length === 0) {
+      delete currentMap[fid];
+    } else {
+      currentMap[fid] = filtered;
+    }
+    // Multi-photo fields mirror urls[0] into formData[fieldId]; keep the
+    // mirror consistent with the post-steal list. Q108 has no mirror.
+    if (getMultiPhotoCap(fid) !== undefined) {
+      next[fid] = filtered[0] ?? "";
+    }
+  }
+}
+
 // Payload contract (v1):
 //   key   = photo blob URL (stable per upload; legacy data may contain
 //           duplicate filenames, so URL is the only reliable identity).
@@ -157,13 +204,19 @@ export async function assignMultiFieldPhotos(
       ? { ...(rawMap as Record<string, unknown>) }
       : {};
 
+  const next: FormData = { ...existing };
+
+  // One-photo-one-owner: remove incoming URLs from every OTHER field's
+  // map entry (multi-photo losers also get their legacy mirror cleared to
+  // the remaining urls[0] so map and mirror stay consistent).
+  stealOneOwner(currentMap, next, fieldId, unique);
+
   if (unique.length > 0) {
     currentMap[fieldId] = unique;
   } else {
     delete currentMap[fieldId];
   }
 
-  const next: FormData = { ...existing };
   next[RESERVED_PHOTO_MAP_KEY] = currentMap;
   next[fieldId] = unique[0] ?? "";
   next[REVIEWED_FLAG] = true;
@@ -247,13 +300,19 @@ export async function assignAdditionalPhotos(
       ? { ...(rawMap as Record<string, unknown>) }
       : {};
 
+  const next: FormData = { ...existing };
+
+  // One-photo-one-owner: remove incoming URLs from every OTHER field's
+  // map entry. Multi-photo losers get their legacy mirror cleared to the
+  // remaining urls[0]; Q108 has no mirror.
+  stealOneOwner(currentMap, next, ADDITIONAL_PHOTOS_FIELD_ID, unique);
+
   if (unique.length > 0) {
     currentMap[ADDITIONAL_PHOTOS_FIELD_ID] = unique;
   } else {
     delete currentMap[ADDITIONAL_PHOTOS_FIELD_ID];
   }
 
-  const next: FormData = { ...existing };
   next[RESERVED_PHOTO_MAP_KEY] = currentMap;
   next[REVIEWED_FLAG] = true;
 
