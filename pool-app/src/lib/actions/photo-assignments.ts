@@ -4,7 +4,12 @@ import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import type { PhotoMetadata } from "@/lib/photos";
 import type { FormData, FormField } from "@/lib/forms";
-import { getMultiPhotoCap, RESERVED_PHOTO_MAP_KEY } from "@/lib/multi-photo";
+import {
+  getMultiPhotoCap,
+  RESERVED_PHOTO_MAP_KEY,
+  ADDITIONAL_PHOTOS_FIELD_ID,
+  ADDITIONAL_PHOTOS_CAP,
+} from "@/lib/multi-photo";
 
 const Q108_ID = "108_additional_photos";
 const UNASSIGNED = "UNASSIGNED";
@@ -161,6 +166,95 @@ export async function assignMultiFieldPhotos(
   const next: FormData = { ...existing };
   next[RESERVED_PHOTO_MAP_KEY] = currentMap;
   next[fieldId] = unique[0] ?? "";
+  next[REVIEWED_FLAG] = true;
+
+  const updated = await db.job.updateMany({
+    where: { id: jobId, status: "DRAFT" },
+    data: { formData: next as unknown as object },
+  });
+  if (updated.count === 0) {
+    return { success: false, error: "Job is no longer editable" };
+  }
+
+  revalidatePath(`/jobs/${jobId}`);
+  revalidatePath("/admin");
+  return { success: true };
+}
+
+// Q108 "Additional Photos" writer — EXPLICIT admin selection, not a drain.
+// The savePhotoAssignments action treats Q108 as a tag and never persists
+// those photos as a field mapping (they "drain" into Q108 at render time).
+// This action, by contrast, writes an explicit list of URLs that the admin
+// chose for Q108, capped at ADDITIONAL_PHOTOS_CAP (7, locked 2026-04-20).
+//
+// Persisted truth on save:
+//   formData["__photoAssignmentsByField"]["108_additional_photos"] = urls[]
+//   formData["__photoAssignmentsReviewed"]                         = true
+//
+// No legacy mirror into formData["108_additional_photos"]. Q108 has no UI
+// that reflects a single URL back to RHF, so mirroring would only give
+// autosave a non-`__` key to clobber on the next keystroke. The map entry
+// is the single source of truth; readFieldPhotoUrls resolves it by field id.
+//
+// Cap enforcement is hard: unique.length > cap rejects without silent
+// truncation. Ownership is validated against job.photos. Draft-only guard
+// is atomic with the write (updateMany with status: "DRAFT"; count === 0
+// rejects — the autosave-race fix in saveFormData also protects this key
+// from being clobbered by a concurrent autosave).
+export async function assignAdditionalPhotos(
+  jobId: string,
+  urls: string[],
+): Promise<{ success: boolean; error?: string }> {
+  // De-duplicate while preserving caller-supplied order. Q108 has no
+  // single-URL mirror, but order still matters: the admin-chosen sequence
+  // is what the PDF will render.
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const u of urls) {
+    if (typeof u !== "string" || u.length === 0) continue;
+    if (seen.has(u)) continue;
+    seen.add(u);
+    unique.push(u);
+  }
+
+  if (unique.length > ADDITIONAL_PHOTOS_CAP) {
+    return {
+      success: false,
+      error: `Too many photos for ${ADDITIONAL_PHOTOS_FIELD_ID}: ${unique.length} > cap ${ADDITIONAL_PHOTOS_CAP}`,
+    };
+  }
+
+  const job = await db.job.findUnique({ where: { id: jobId } });
+  if (!job) return { success: false, error: "Job not found" };
+  if (job.status !== "DRAFT") {
+    return { success: false, error: "Only draft jobs can assign photos" };
+  }
+
+  // Ownership: every URL must already exist in job.photos. Q108 is explicit
+  // selection from the existing upload pool — not a blob-URL freelist.
+  const photos = (job.photos as PhotoMetadata[] | null) ?? [];
+  const photoUrlSet = new Set(photos.map((p) => p.url));
+  for (const u of unique) {
+    if (!photoUrlSet.has(u)) {
+      return { success: false, error: "Unknown photo in payload" };
+    }
+  }
+
+  const existing = (job.formData as FormData | null) ?? {};
+  const rawMap = existing[RESERVED_PHOTO_MAP_KEY];
+  const currentMap: Record<string, unknown> =
+    rawMap && typeof rawMap === "object" && !Array.isArray(rawMap)
+      ? { ...(rawMap as Record<string, unknown>) }
+      : {};
+
+  if (unique.length > 0) {
+    currentMap[ADDITIONAL_PHOTOS_FIELD_ID] = unique;
+  } else {
+    delete currentMap[ADDITIONAL_PHOTOS_FIELD_ID];
+  }
+
+  const next: FormData = { ...existing };
+  next[RESERVED_PHOTO_MAP_KEY] = currentMap;
   next[REVIEWED_FLAG] = true;
 
   const updated = await db.job.updateMany({

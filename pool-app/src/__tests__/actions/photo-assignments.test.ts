@@ -13,17 +13,23 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-import { assignMultiFieldPhotos } from "@/lib/actions/photo-assignments";
+import {
+  assignMultiFieldPhotos,
+  assignAdditionalPhotos,
+} from "@/lib/actions/photo-assignments";
 import { db } from "@/lib/db";
 import {
   MULTI_PHOTO_CAPS,
   RESERVED_PHOTO_MAP_KEY,
   REVIEWED_FLAG,
+  ADDITIONAL_PHOTOS_FIELD_ID,
+  ADDITIONAL_PHOTOS_CAP,
 } from "@/lib/multi-photo";
 
 const Q5 = "5_picture_of_pool_and_spa_if_applicable";
 const Q5_CAP = MULTI_PHOTO_CAPS[Q5]!; // 5, locked 2026-04-20
 const Q16 = "16_photo_of_pool_pump";
+const Q108 = ADDITIONAL_PHOTOS_FIELD_ID; // "108_additional_photos"
 
 function writtenFormData(): Record<string, unknown> {
   const calls = vi.mocked(db.job.updateMany).mock.calls;
@@ -219,5 +225,175 @@ describe("assignMultiFieldPhotos", () => {
     expect(saved[REVIEWED_FLAG]).toBe(true);
     // Unrelated formData survives the write.
     expect(saved.unrelated).toBe("keep");
+  });
+});
+
+describe("assignAdditionalPhotos (Q108)", () => {
+  it("accepts a valid explicit Q108 selection within cap", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: null,
+      photos: [photoMeta("u1"), photoMeta("u2"), photoMeta("u3")],
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", ["u1", "u2", "u3"]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    expect(saved[RESERVED_PHOTO_MAP_KEY]).toEqual({
+      [Q108]: ["u1", "u2", "u3"],
+    });
+    expect(saved[REVIEWED_FLAG]).toBe(true);
+    // No legacy mirror for Q108 — the map entry is the only persisted shape.
+    expect(saved).not.toHaveProperty(Q108);
+  });
+
+  it("accepts a payload exactly at cap (7, locked 2026-04-20)", async () => {
+    const urls = Array.from(
+      { length: ADDITIONAL_PHOTOS_CAP },
+      (_, i) => `q108-${i}`,
+    );
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: null,
+      photos: urls.map(photoMeta),
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", urls);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    expect(saved[RESERVED_PHOTO_MAP_KEY]).toEqual({ [Q108]: urls });
+  });
+
+  it("rejects an over-cap payload without silent truncation", async () => {
+    const tooMany = Array.from(
+      { length: ADDITIONAL_PHOTOS_CAP + 1 },
+      (_, i) => `q108-${i}`,
+    );
+
+    const res = await assignAdditionalPhotos("job-1", tooMany);
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/too many photos/i);
+    // Over-cap must reject before any DB touch.
+    expect(db.job.findUnique).not.toHaveBeenCalled();
+    expect(db.job.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a URL not present in job.photos", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: null,
+      photos: [photoMeta("u1")],
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", ["u1", "stranger"]);
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/unknown photo/i);
+    expect(db.job.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-DRAFT job", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "SUBMITTED",
+      formData: null,
+      photos: [photoMeta("u1")],
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", ["u1"]);
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/only draft/i);
+    expect(db.job.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects when updateMany returns count 0 and proves the guarded write was attempted", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: null,
+      photos: [photoMeta("u1")],
+    } as never);
+    vi.mocked(db.job.updateMany).mockResolvedValueOnce({ count: 0 } as never);
+
+    const res = await assignAdditionalPhotos("job-1", ["u1"]);
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/no longer editable/i);
+
+    expect(db.job.updateMany).toHaveBeenCalledTimes(1);
+    const updateArg = vi.mocked(db.job.updateMany).mock.calls[0]![0] as {
+      where: { id: string; status: string };
+    };
+    expect(updateArg.where).toEqual({ id: "job-1", status: "DRAFT" });
+  });
+
+  it("deduplicates URLs while preserving first-occurrence order", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: null,
+      photos: [photoMeta("u1"), photoMeta("u2")],
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", [
+      "u2",
+      "u1",
+      "u2",
+      "u1",
+      "u2",
+    ]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    expect(saved[RESERVED_PHOTO_MAP_KEY]).toEqual({ [Q108]: ["u2", "u1"] });
+  });
+
+  it("empty urls deletes the Q108 entry and preserves sibling map entries", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [RESERVED_PHOTO_MAP_KEY]: {
+          [Q5]: ["u1", "u2"],
+          [Q108]: ["x1", "x2"],
+        },
+      },
+      photos: [
+        photoMeta("u1"),
+        photoMeta("u2"),
+        photoMeta("x1"),
+        photoMeta("x2"),
+      ],
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", []);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    const map = saved[RESERVED_PHOTO_MAP_KEY] as Record<string, unknown>;
+    // Q108 entry is removed from the map.
+    expect(map).not.toHaveProperty(Q108);
+    // Q5 entry written by a different action (assignMultiFieldPhotos) is
+    // preserved — Q108's writer must not clobber sibling multi-photo fields.
+    expect(map[Q5]).toEqual(["u1", "u2"]);
+  });
+
+  it("sets __photoAssignmentsReviewed to true and preserves unrelated formData", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: { customer_name: "Alex", [REVIEWED_FLAG]: false },
+      photos: [photoMeta("u1")],
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", ["u1"]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    expect(saved[REVIEWED_FLAG]).toBe(true);
+    expect(saved.customer_name).toBe("Alex");
   });
 });
