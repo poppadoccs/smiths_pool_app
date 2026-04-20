@@ -1,0 +1,1282 @@
+{
+  "success": true,
+  "template": {
+    "name": "Pool/Spa Inspection",
+    "description": "",
+    "category": "",
+    "fields": [
+      {
+        "id": "1_inspection_performed_for",
+        "label": "1. Inspection performed for",
+        "type": "text",
+        "required": false,
+        "section": "4. Type of Installation:",
+        "order": 0
+      },
+      {
+        "id": "2_date_of_inspection",
+        "label": "2. Date of Inspection",
+        "type": "date",
+        "required": false,
+        "section": "4. Type of Installation:",
+        "order": 1
+      },
+      {
+        "id": "3_address",
+        "label": "3. Address",
+        "type": "text",
+        "required": false,
+        "section": "4. Type of Installation:",
+        "order": 2
+      },
+      {
+        "id": "4_type_of_installation",
+        "label": "4. Type of Installation",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Pool, Spa, Pool/Spa Combo (Shared), Pool/Spa Combo (Dual)",
+        "options": [
+          "Pool",
+          "Spa",
+          "Pool/Spa Combo (Shared)",
+          "Pool/Spa Combo (Dual)"
+        ],
+        "section": "4. Type of Installation:",
+        "order": 3
+      },
+      {
+        "id": "5_picture_of_pool_and_spa_if_applicable",
+        "label": "5. Picture of Pool and Spa(if applicable)",
+        "type": "photo",
+        "required": false,
+        "section": "4. Type of Installation:",
+        "order": 4
+      },
+      {
+        "id": "6_pool_filtration_pump",
+        "label": "6. Pool Filtration Pump",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "6. Pool Filtration Pump:",
+        "order": 5
+      },
+      {
+        "id": "7_pump_mfg",
+        "label": "7. Pump Mfg",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Hayward, Pentair, Sta-Rite, Jandy, Jacuzzi, Other",
+        "options": [
+          "Hayward",
+          "Pentair",
+          "Sta-Rite",
+          "Jandy",
+          "Jacuzzi",
+          "Other"
+        ],
+        "section": "7. Pump Mfg:",
+        "order": 6
+      },
+      {
+        "id": "8_pump_model",
+        "label": "8. Pump Model",
+        "type": "text",
+        "required": false,
+        "section": "7. Pump Mfg:",
+        "order": 7
+      },
+      {
+        "id": "9_pump_hp",
+        "label": "9. Pump HP",
+        "type": "radio",
+        "required": false,
+        "placeholder": "1.0, 1.5, 2.0, Variable, Other",
+        "options": [
+          "1.0",
+          "1.5",
+          "2.0",
+          "Variable",
+          "Other"
+        ],
+        "section": "9. Pump HP:",
+        "order": 8
+      },
+      {
+        "id": "10_pump_basket_present",
+        "label": "10. Pump Basket Present",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "10. Pump Basket Present:",
+        "order": 9
+      },
+      {
+        "id": "11_basket_damaged",
+        "label": "11. Basket Damaged",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "11. Basket Damaged:",
+        "order": 10
+      },
+      {
+        "id": "12_bearing_winding_noise",
+        "label": "12. Bearing/Winding Noise",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "12. Bearing/Winding Noise:",
+        "order": 11
+      },
+      {
+        "id": "13_pump_operating_correctly",
+        "label": "13. Pump operating correctly",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "13. Pump operating correctly:",
+        "order": 12
+      },
+      {
+        "id": "14_leaks_at_pump",
+        "label": "14. Leaks at Pump",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "14. Leaks at Pump:",
+        "order": 13
+      },
+      {
+        "id": "15_remarks_notes",
+        "label": "15. Remarks/Notes",
+        "type": "textarea",
+        "required": false,
+        "section": "14. Leaks at Pump:",
+        "order": 14
+      },
+      {
+        "id": "16_photo_of_pool_pump",
+        "label": "16. Photo of pool pump",
+        "type": "photo",
+        "required": false,
+        "section": "14. Leaks at Pump:",
+        "order": 15
+      },
+      {
+        "id": "17_spa_filtration_pump",
+        "label": "17. Spa Filtration Pump",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "17. Spa Filtration Pump:",
+        "order": 16
+      },
+      {
+        "id": "18_pool_filter",
+        "label": "18. Pool filter",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "18. Pool filter:",
+        "order": 17
+      },
+      {
+        "id": "19_filter_mfg",
+        "label": "19. Filter Mfg",
+        "type": "text",
+        "required": false,
+        "section": "18. Pool filter:",
+        "order": 18
+      },
+      {
+        "id": "20_filter_type",
+        "label": "20. Filter Type",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Cartridge, Sand, D.E., Other",
+        "options": [
+          "Cartridge",
+          "Sand",
+          "D.E.",
+          "Other"
+        ],
+        "section": "20. Filter Type:",
+        "order": 19
+      },
+      {
+        "id": "21_filter_size_sq_ft",
+        "label": "21. Filter Size (sq. ft.)",
+        "type": "text",
+        "required": false,
+        "section": "20. Filter Type:",
+        "order": 20
+      },
+      {
+        "id": "22_filter_gauge_working",
+        "label": "22. Filter gauge working",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "22. Filter gauge working:",
+        "order": 21
+      },
+      {
+        "id": "23_filter_pressure_in_lbs",
+        "label": "23. Filter pressure in lbs",
+        "type": "text",
+        "required": false,
+        "section": "22. Filter gauge working:",
+        "order": 22
+      },
+      {
+        "id": "24_condition_of_cartridge",
+        "label": "24. Condition of cartridge",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Good, Fair, Need Replaced, N/a",
+        "options": [
+          "Good",
+          "Fair",
+          "Need Replaced",
+          "N/a"
+        ],
+        "section": "24. Condition of cartridge:",
+        "order": 23
+      },
+      {
+        "id": "25_picture_of_cartridge",
+        "label": "25. Picture of Cartridge",
+        "type": "photo",
+        "required": false,
+        "section": "24. Condition of cartridge:",
+        "order": 24
+      },
+      {
+        "id": "26_is_d_e_going_back_into_pool",
+        "label": "26. Is D.E. going back into pool?",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "26. Is D.E. going back into pool?",
+        "order": 25
+      },
+      {
+        "id": "27_spa_filter",
+        "label": "27. Spa Filter",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "27. Spa Filter:",
+        "order": 26
+      },
+      {
+        "id": "28_automation",
+        "label": "28. Automation",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "28. Automation:",
+        "order": 27
+      },
+      {
+        "id": "29_mfg_and_model",
+        "label": "29. MFG and Model",
+        "type": "text",
+        "required": false,
+        "section": "28. Automation:",
+        "order": 28
+      },
+      {
+        "id": "30_remote_control",
+        "label": "30. Remote Control",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "30. Remote Control:",
+        "order": 29
+      },
+      {
+        "id": "31_model",
+        "label": "31. Model",
+        "type": "text",
+        "required": false,
+        "section": "30. Remote Control:",
+        "order": 30
+      },
+      {
+        "id": "32_system_working",
+        "label": "32. System Working",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "32. System Working:",
+        "order": 31
+      },
+      {
+        "id": "33_remarks_notes",
+        "label": "33. Remarks/Notes",
+        "type": "textarea",
+        "required": false,
+        "section": "32. System Working:",
+        "order": 32
+      },
+      {
+        "id": "34_cell_working_salt",
+        "label": "34. Cell working (Salt)",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "34. Cell working (Salt):",
+        "order": 33
+      },
+      {
+        "id": "35_pool_sanitation",
+        "label": "35. Pool Sanitation",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "35. Pool Sanitation:",
+        "order": 34
+      },
+      {
+        "id": "36_type",
+        "label": "36. Type",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Salt, Other",
+        "options": [
+          "Salt",
+          "Other"
+        ],
+        "section": "36. Type:",
+        "order": 35
+      },
+      {
+        "id": "37_mfg",
+        "label": "37. Mfg",
+        "type": "text",
+        "required": false,
+        "section": "36. Type:",
+        "order": 36
+      },
+      {
+        "id": "38_chlorinator_model",
+        "label": "38. Chlorinator model",
+        "type": "text",
+        "required": false,
+        "section": "36. Type:",
+        "order": 37
+      },
+      {
+        "id": "39_leaks_at_chlorinator",
+        "label": "39. Leaks at chlorinator",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "39. Leaks at chlorinator:",
+        "order": 38
+      },
+      {
+        "id": "40_picture_if_leak_is_present_at_chlorinator",
+        "label": "40. Picture if leak is present at Chlorinator",
+        "type": "photo",
+        "required": false,
+        "section": "39. Leaks at chlorinator:",
+        "order": 39
+      },
+      {
+        "id": "41_ozonator_working",
+        "label": "41. Ozonator working",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "41. Ozonator working:",
+        "order": 40
+      },
+      {
+        "id": "42_erosion_style_control_valve",
+        "label": "42. Erosion style: Control valve",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "42. Erosion style: Control valve:",
+        "order": 41
+      },
+      {
+        "id": "43_spa_sanitation",
+        "label": "43. Spa Sanitation",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "43. Spa Sanitation:",
+        "order": 42
+      },
+      {
+        "id": "44_cell_working_salt",
+        "label": "44. Cell Working (Salt)",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "44. Cell Working (Salt):",
+        "order": 43
+      },
+      {
+        "id": "45_is_there_lighting",
+        "label": "45. Is there lighting?",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "45. Is there lighting?",
+        "order": 44
+      },
+      {
+        "id": "46_number_of_pool_lights_and_what_type_are_the_lights",
+        "label": "46. Number of Pool Lights and what type are the lights",
+        "type": "text",
+        "required": false,
+        "section": "45. Is there lighting?",
+        "order": 45
+      },
+      {
+        "id": "47_are_pool_lights_working",
+        "label": "47. Are Pool Lights Working?",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "47. Are Pool Lights Working?",
+        "order": 46
+      },
+      {
+        "id": "48_voltage_of_pool_lights",
+        "label": "48. Voltage of Pool Lights",
+        "type": "radio",
+        "required": false,
+        "placeholder": "12V, 120V, Other",
+        "options": [
+          "12V",
+          "120V",
+          "Other"
+        ],
+        "section": "48. Voltage of Pool Lights:",
+        "order": 47
+      },
+      {
+        "id": "49_pool_lights_controlled_by",
+        "label": "49. Pool Lights controlled by",
+        "type": "text",
+        "required": false,
+        "section": "48. Voltage of Pool Lights:",
+        "order": 48
+      },
+      {
+        "id": "50_is_there_spa_lights",
+        "label": "50. Is there Spa Lights?",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "50. Is there Spa Lights?",
+        "order": 49
+      },
+      {
+        "id": "51_pool_heater",
+        "label": "51. Pool Heater",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "51. Pool Heater:",
+        "order": 50
+      },
+      {
+        "id": "52_do_they_have_solar",
+        "label": "52. Do they have Solar?",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "52. Do they have Solar?",
+        "order": 51
+      },
+      {
+        "id": "53_solar_controller",
+        "label": "53. Solar Controller",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "53. Solar Controller:",
+        "order": 52
+      },
+      {
+        "id": "54_controller_mfg",
+        "label": "54. Controller mfg",
+        "type": "text",
+        "required": false,
+        "section": "53. Solar Controller:",
+        "order": 53
+      },
+      {
+        "id": "55_does_the_valve_work",
+        "label": "55. Does the Valve work",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "55. Does the Valve work:",
+        "order": 54
+      },
+      {
+        "id": "56_gva_s_working",
+        "label": "56. GVA's working",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "56. GVA's working:",
+        "order": 55
+      },
+      {
+        "id": "57_do_they_have_a_solar_cover_blanket",
+        "label": "57. Do they have a solar cover/blanket?",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "57. Do they have a solar cover/blanket?",
+        "order": 56
+      },
+      {
+        "id": "58_what_is_the_condition_of_the_solar_cover_blanket",
+        "label": "58. What is the condition of the Solar Cover/blanket?",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Good, Fair, Needs to be replaced, N/a",
+        "options": [
+          "Good",
+          "Fair",
+          "Needs to be replaced",
+          "N/a"
+        ],
+        "section": "58. What is the condition of the Solar Cover/blanket?",
+        "order": 57
+      },
+      {
+        "id": "59_heater_2",
+        "label": "59. Heater 2",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "59. Heater 2:",
+        "order": 58
+      },
+      {
+        "id": "60_spa_heater",
+        "label": "60. Spa Heater",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "60. Spa Heater:",
+        "order": 59
+      },
+      {
+        "id": "61_ball_valves",
+        "label": "61. Ball Valves",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "61. Ball Valves:",
+        "order": 60
+      },
+      {
+        "id": "62_jandy_style_valves",
+        "label": "62. Jandy Style Valves",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "62. Jandy Style Valves:",
+        "order": 61
+      },
+      {
+        "id": "63_jandy_style_manufacture",
+        "label": "63. Jandy style Manufacture",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Jandy, Pentair, Hayward, Other",
+        "options": [
+          "Jandy",
+          "Pentair",
+          "Hayward",
+          "Other"
+        ],
+        "section": "63. Jandy style Manufacture:",
+        "order": 62
+      },
+      {
+        "id": "64_qty_of_2_way_1_1_2_x_2",
+        "label": "64. Qty of 2-way 1 1/2\" x 2\"",
+        "type": "text",
+        "required": false,
+        "section": "63. Jandy style Manufacture:",
+        "order": 63
+      },
+      {
+        "id": "65_qty_of_2_way_2_x_2_1_2",
+        "label": "65. Qty of 2-way 2\"x 2 1/2\"",
+        "type": "text",
+        "required": false,
+        "section": "63. Jandy style Manufacture:",
+        "order": 64
+      },
+      {
+        "id": "66_qty_of_3_way_1_1_2_x_2",
+        "label": "66. Qty of 3-way 1 1/2\" x 2\"",
+        "type": "text",
+        "required": false,
+        "section": "63. Jandy style Manufacture:",
+        "order": 65
+      },
+      {
+        "id": "67_qty_of_3_way_2_x2_1_2",
+        "label": "67. Qty of 3-way 2\"x2 1/2\"",
+        "type": "text",
+        "required": false,
+        "section": "63. Jandy style Manufacture:",
+        "order": 66
+      },
+      {
+        "id": "68_de_backwash_valve_mfg",
+        "label": "68.DE backwash valve mfg",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "68.DE backwash valve mfg:",
+        "order": 67
+      },
+      {
+        "id": "69_model",
+        "label": "69. Model",
+        "type": "text",
+        "required": false,
+        "section": "68.DE backwash valve mfg:",
+        "order": 68
+      },
+      {
+        "id": "70_leaks_visible",
+        "label": "70. Leaks visible",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "70. Leaks visible:",
+        "order": 69
+      },
+      {
+        "id": "71_picture_of_leaks_on_valves_if_applicable",
+        "label": "71. Picture of Leaks on Valves if applicable",
+        "type": "photo",
+        "required": false,
+        "section": "70. Leaks visible:",
+        "order": 70
+      },
+      {
+        "id": "72_remarks_notes",
+        "label": "72. Remarks/Notes",
+        "type": "textarea",
+        "required": false,
+        "section": "70. Leaks visible:",
+        "order": 71
+      },
+      {
+        "id": "73_type_of_pool_deck",
+        "label": "73. Type of pool deck",
+        "type": "text",
+        "required": false,
+        "section": "70. Leaks visible:",
+        "order": 72
+      },
+      {
+        "id": "74_hairline_cracks",
+        "label": "74. Hairline cracks",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "74. Hairline cracks:",
+        "order": 73
+      },
+      {
+        "id": "75_larger_cracks",
+        "label": "75. Larger cracks",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "75. Larger cracks:",
+        "order": 74
+      },
+      {
+        "id": "76_remarks_notes",
+        "label": "76. Remarks/Notes",
+        "type": "textarea",
+        "required": false,
+        "section": "75. Larger cracks:",
+        "order": 75
+      },
+      {
+        "id": "77_type_of_coping",
+        "label": "77. Type of coping",
+        "type": "text",
+        "required": false,
+        "section": "75. Larger cracks:",
+        "order": 76
+      },
+      {
+        "id": "78_coping_loose_chipped_or_missing",
+        "label": "78. Coping Loose, Chipped or missing",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Loose, Chipped, Missing, N/a, None",
+        "options": [
+          "Loose",
+          "Chipped",
+          "Missing",
+          "N/a",
+          "None"
+        ],
+        "section": "78. Coping Loose, Chipped or missing:",
+        "order": 77
+      },
+      {
+        "id": "79_remarks_notes",
+        "label": "79. Remarks/Notes",
+        "type": "textarea",
+        "required": false,
+        "section": "78. Coping Loose, Chipped or missing:",
+        "order": 78
+      },
+      {
+        "id": "80_tile_missing_chipped_cracked_or_loose",
+        "label": "80. Tile missing, chipped, cracked, or loose",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Missing, Cracked, Chipped, Loose, N/a, None",
+        "options": [
+          "Missing",
+          "Cracked",
+          "Chipped",
+          "Loose",
+          "N/a",
+          "None"
+        ],
+        "section": "80. Tile missing, chipped, cracked, or loose:",
+        "order": 79
+      },
+      {
+        "id": "81_tiles_pushed_in_or_away_from_pool_wall",
+        "label": "81. Tiles pushed in or away from pool wall",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "81. Tiles pushed in or away from pool wall",
+        "order": 80
+      },
+      {
+        "id": "82_grout_condition",
+        "label": "82. Grout Condition",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Good, Fair, Needs Repair",
+        "options": [
+          "Good",
+          "Fair",
+          "Needs Repair"
+        ],
+        "section": "82. Grout Condition:",
+        "order": 81
+      },
+      {
+        "id": "83_remarks_notes",
+        "label": "83. Remarks/Notes",
+        "type": "textarea",
+        "required": false,
+        "section": "82. Grout Condition:",
+        "order": 82
+      },
+      {
+        "id": "84_skimmer_manufacturer",
+        "label": "84. Skimmer Manufacturer",
+        "type": "text",
+        "required": false,
+        "section": "82. Grout Condition:",
+        "order": 83
+      },
+      {
+        "id": "85_skimmer_lid_installed",
+        "label": "85. Skimmer Lid installed",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "85. Skimmer Lid installed:",
+        "order": 84
+      },
+      {
+        "id": "86_basket_installed",
+        "label": "86. Basket installed",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "86. Basket installed:",
+        "order": 85
+      },
+      {
+        "id": "87_main_drain_mfg",
+        "label": "87. Main drain mfg",
+        "type": "text",
+        "required": false,
+        "section": "86. Basket installed:",
+        "order": 86
+      },
+      {
+        "id": "88_main_drains_cover_s_installed",
+        "label": "88. Main drains cover(s) installed?",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "88. Main drains cover(s) installed?",
+        "order": 87
+      },
+      {
+        "id": "89_separate_line_for_vacuum",
+        "label": "89. Separate line for vacuum",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "89. Separate line for vacuum:",
+        "order": 88
+      },
+      {
+        "id": "90_vac_lock_installed",
+        "label": "90. Vac lock installed",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "90. Vac lock installed:",
+        "order": 89
+      },
+      {
+        "id": "91_remarks_notes",
+        "label": "91. Remarks/Notes",
+        "type": "textarea",
+        "required": false,
+        "section": "90. Vac lock installed:",
+        "order": 90
+      },
+      {
+        "id": "92_handrail",
+        "label": "92. Handrail",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "92. Handrail:",
+        "order": 91
+      },
+      {
+        "id": "93_handrail_type",
+        "label": "93. Handrail Type",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Powder coated, Stainless steel, PVC, Vinyl, Other, N/a",
+        "options": [
+          "Powder coated",
+          "Stainless steel",
+          "PVC",
+          "Vinyl",
+          "Other",
+          "N/a"
+        ],
+        "section": "93. Handrail Type:",
+        "order": 92
+      },
+      {
+        "id": "94_escutcheons_installed",
+        "label": "94. Escutcheons installed",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "94. Escutcheons installed:",
+        "order": 93
+      },
+      {
+        "id": "95_handrail_securely_in_place",
+        "label": "95. Handrail securely in place",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No, N/a",
+        "options": [
+          "Yes",
+          "No",
+          "N/a"
+        ],
+        "section": "95. Handrail securely in place:",
+        "order": 94
+      },
+      {
+        "id": "96_overall_handrail_condition",
+        "label": "96. Overall Handrail condition",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Good, Fair, Needs Repair, N/a",
+        "options": [
+          "Good",
+          "Fair",
+          "Needs Repair",
+          "N/a"
+        ],
+        "section": "96. Overall Handrail condition:",
+        "order": 95
+      },
+      {
+        "id": "97_ladder",
+        "label": "97. Ladder",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "97. Ladder:",
+        "order": 96
+      },
+      {
+        "id": "98_type_of_pool_finish",
+        "label": "98. Type of Pool Finish",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Exposed Aggregate, Marcite, Fiberglass, Vinyl Liner",
+        "options": [
+          "Exposed Aggregate",
+          "Marcite",
+          "Fiberglass",
+          "Vinyl Liner"
+        ],
+        "section": "98. Type of Pool Finish:",
+        "order": 97
+      },
+      {
+        "id": "99_hydration_visible",
+        "label": "99. Hydration visible",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "99. Hydration visible:",
+        "order": 98
+      },
+      {
+        "id": "100_stains_visible",
+        "label": "100. Stains visible",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "100. Stains visible:",
+        "order": 99
+      },
+      {
+        "id": "101_overall_condition",
+        "label": "101. Overall Condition",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Good, Fair, Needs Repair",
+        "options": [
+          "Good",
+          "Fair",
+          "Needs Repair"
+        ],
+        "section": "101. Overall Condition:",
+        "order": 100
+      },
+      {
+        "id": "102_remarks_notes",
+        "label": "102. Remarks/ Notes",
+        "type": "textarea",
+        "required": false,
+        "section": "101. Overall Condition:",
+        "order": 101
+      },
+      {
+        "id": "103_type_of_spa_finish",
+        "label": "103. Type of spa finish",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Exposed Aggregate, Marcite, Fiberglass, Vinyl Liner, N/a",
+        "options": [
+          "Exposed Aggregate",
+          "Marcite",
+          "Fiberglass",
+          "Vinyl Liner",
+          "N/a"
+        ],
+        "section": "103. Type of spa finish:",
+        "order": 102
+      },
+      {
+        "id": "104_pool_cleaner",
+        "label": "104. Pool cleaner",
+        "type": "radio",
+        "required": false,
+        "placeholder": "In Floor, Auto Vac, N/a",
+        "options": [
+          "In Floor",
+          "Auto Vac",
+          "N/a"
+        ],
+        "section": "104. Pool cleaner:",
+        "order": 103
+      },
+      {
+        "id": "105_standard_timer",
+        "label": "105. Standard timer",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "105. Standard timer:",
+        "order": 104
+      },
+      {
+        "id": "106_autofill",
+        "label": "106. Autofill",
+        "type": "radio",
+        "required": false,
+        "placeholder": "Yes, No",
+        "options": [
+          "Yes",
+          "No"
+        ],
+        "section": "106. Autofill:",
+        "order": 105
+      },
+      {
+        "id": "107_summary",
+        "label": "107. Summary",
+        "type": "textarea",
+        "required": false,
+        "section": "106. Autofill:",
+        "order": 106
+      },
+      {
+        "id": "108_additional_photos",
+        "label": "108. Additional Photos",
+        "type": "photo",
+        "required": false,
+        "section": "106. Autofill:",
+        "order": 107
+      }
+    ]
+  }
+}

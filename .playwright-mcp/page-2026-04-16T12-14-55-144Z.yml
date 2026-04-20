@@ -1,0 +1,100 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - link "Back to Jobs" [ref=e171] [cursor=pointer]:
+      - /url: /
+      - button "Back to Jobs" [ref=e172]:
+        - img
+        - text: Back to Jobs
+    - generic [ref=e5]:
+      - heading "RealProof-InspectionTest" [level=1] [ref=e173]
+      - generic [ref=e8]: Submitted
+      - paragraph [ref=e9]: Created April 16th, 2026 at 7:33 AM
+      - paragraph [ref=e174]: "Submitted by: Alex"
+    - separator [ref=e10]
+    - generic [ref=e11]:
+      - generic [ref=e13]:
+        - heading "Photos" [level=2] [ref=e175]
+        - paragraph [ref=e15]: No photos yet. Take a photo or add from your library.
+      - generic [ref=e22]:
+        - heading "Form" [level=2] [ref=e176]
+        - generic [ref=e24]:
+          - generic [ref=e28]:
+            - generic [ref=e29]:
+              - text: Customer Name
+              - generic [ref=e30]: "*"
+            - textbox "Customer Name *" [disabled]:
+              - /placeholder: e.g., John Smith
+              - text: Alex Corral
+          - generic [ref=e33]:
+            - generic [ref=e34]:
+              - text: Job Address
+              - generic [ref=e35]: "*"
+            - textbox "Job Address *" [disabled]:
+              - /placeholder: e.g., 123 Main St, Anytown
+              - text: 456 Palm Dr, Tavares FL 32778
+          - generic [ref=e38]:
+            - generic [ref=e39]:
+              - text: Pool Type
+              - generic [ref=e40]: "*"
+            - combobox [disabled] [ref=e41]:
+              - generic [ref=e42]: Pool/Spa Combo (Shared)
+              - img: ▼
+            - textbox [disabled] [ref=e43]: Pool/Spa Combo (Shared)
+          - generic [ref=e45]:
+            - generic [ref=e46]: Pool Shape
+            - combobox [disabled] [ref=e47]:
+              - generic [ref=e48]: Select...
+              - img: ▼
+            - textbox [disabled] [ref=e49]
+          - generic [ref=e51]:
+            - generic [ref=e52]:
+              - text: Length (ft)
+              - generic [ref=e53]: "*"
+            - textbox "Length (ft) *" [disabled]:
+              - /placeholder: e.g., 32
+              - text: "32"
+          - generic [ref=e56]:
+            - generic [ref=e57]:
+              - text: Width (ft)
+              - generic [ref=e58]: "*"
+            - textbox "Width (ft) *" [disabled]:
+              - /placeholder: e.g., 16
+              - text: "16"
+          - generic [ref=e61]:
+            - generic [ref=e62]: Depth - Shallow End (ft)
+            - textbox "Depth - Shallow End (ft)" [disabled]:
+              - /placeholder: e.g., 3.5
+          - generic [ref=e65]:
+            - generic [ref=e66]: Depth - Deep End (ft)
+            - textbox "Depth - Deep End (ft)" [disabled]:
+              - /placeholder: e.g., 8
+          - generic [ref=e69] [cursor=pointer]:
+            - checkbox "Pump Installed" [checked] [disabled] [ref=e177]:
+              - img [ref=e72]
+            - checkbox [checked] [disabled] [ref=e74]
+            - generic [ref=e75]: Pump Installed
+          - generic [ref=e77] [cursor=pointer]:
+            - checkbox "Filter Installed" [checked] [disabled] [ref=e178]:
+              - img [ref=e80]
+            - checkbox [checked] [disabled] [ref=e82]
+            - generic [ref=e83]: Filter Installed
+          - generic [ref=e85] [cursor=pointer]:
+            - checkbox "Heater Installed" [disabled] [ref=e179]
+            - checkbox [disabled] [ref=e87]
+            - generic [ref=e88]: Heater Installed
+          - generic [ref=e90] [cursor=pointer]:
+            - checkbox "Lights Installed" [disabled] [ref=e180]
+            - checkbox [disabled] [ref=e92]
+            - generic [ref=e93]: Lights Installed
+          - generic [ref=e95]:
+            - generic [ref=e96]: Notes
+            - textbox "Notes" [disabled] [ref=e181]:
+              - /placeholder: Any additional details about the installation...
+  - region "Notifications alt+T":
+    - list:
+      - listitem [ref=e182]:
+        - img [ref=e184]
+        - generic [ref=e187]: Job submitted for review!
+  - button "Open Next.js Dev Tools" [ref=e127] [cursor=pointer]:
+    - img [ref=e128]
+  - alert [ref=e131]
