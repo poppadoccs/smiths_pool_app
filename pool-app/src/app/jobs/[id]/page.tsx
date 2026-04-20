@@ -130,6 +130,7 @@ export default async function JobDetailPage({ params }: Props) {
               jobId={job.id}
               template={template}
               initialData={(job.formData as FormData) ?? null}
+              jobPhotos={job.photos as PhotoMetadata[]}
               disabled={isSubmitted}
             />
           </CardContent>

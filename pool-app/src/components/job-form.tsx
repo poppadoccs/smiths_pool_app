@@ -35,6 +35,8 @@ import {
 import { saveFormData } from "@/lib/actions/forms";
 import { StickyFormNav } from "@/components/sticky-form-nav";
 import { ImportFromPaper } from "@/components/import-from-paper";
+import { RemarksPhotosField } from "@/components/remarks-photos-field";
+import type { PhotoMetadata } from "@/lib/photos";
 
 // --- localStorage draft helpers ---
 
@@ -76,11 +78,19 @@ export function JobForm({
   jobId,
   template,
   initialData,
+  jobPhotos = [],
   disabled = false,
 }: {
   jobId: string;
   template: FormTemplate;
   initialData: JobFormData | null;
+  /**
+   * Authoritative job photo metadata from the server snapshot. Used by the
+   * companion remarks-photo UI to resolve thumbnails and populate the
+   * "Add photo" picker. Defaults to [] so existing call sites that don't
+   * need remarks-photo UI can upgrade incrementally.
+   */
+  jobPhotos?: PhotoMetadata[];
   disabled?: boolean;
 }) {
   const schema = useMemo(() => buildFormSchema(template), [template]);
@@ -206,6 +216,8 @@ export function JobForm({
               errors={errors}
               disabled={disabled}
               jobId={jobId}
+              jobPhotos={jobPhotos}
+              serverFormData={initialData}
             />
           </div>
         );
@@ -329,6 +341,8 @@ function FieldRenderer({
   errors,
   disabled = false,
   jobId,
+  jobPhotos,
+  serverFormData,
 }: {
   field: FormField;
   register: UseFormRegister<JobFormData>;
@@ -336,6 +350,8 @@ function FieldRenderer({
   errors: FieldErrors<JobFormData>;
   disabled?: boolean;
   jobId: string;
+  jobPhotos: PhotoMetadata[];
+  serverFormData: JobFormData | null;
 }) {
   const error = errors[field.id]?.message as string | undefined;
   const fieldId = `field-${field.id}`;
@@ -410,6 +426,18 @@ function FieldRenderer({
             {...register(field.id)}
           />
           {error && <p className="text-sm text-red-600">{error}</p>}
+          {/* Companion remarks-photo UI: the component is a no-op for any
+              textarea id that isn't a remarks note, so wiring it here is
+              safe for every textarea case. The textarea's RHF value (note
+              text) and the photo bucket are stored under completely
+              different keys — no collision is possible. */}
+          <RemarksPhotosField
+            jobId={jobId}
+            textareaFieldId={field.id}
+            jobPhotos={jobPhotos}
+            formData={serverFormData}
+            disabled={disabled}
+          />
         </div>
       );
 
