@@ -152,6 +152,22 @@ export async function savePhotoAssignments(
     id === ADDITIONAL_PHOTOS_FIELD_ID ||
     mapEntries[id] !== undefined;
 
+  // Source-ownership inventory: every URL currently owned by the reserved
+  // map, across every field. Used below to reject any incoming assignment
+  // whose URL is already map-owned. Without this, a sequence like
+  //   assignMultiFieldPhotos(Q5, [u]); savePhotoAssignments({u: "legacy"})
+  // would leave map[Q5] AND mirror[legacy] both pointing at u — two owners.
+  // savePhotoAssignments is legacy-only and must not touch the map, so the
+  // only safe answer is to refuse the write and tell the admin to release
+  // map ownership first via the dedicated action.
+  const mapOwnedUrls = new Set<string>();
+  for (const entry of Object.values(mapEntries)) {
+    if (!Array.isArray(entry)) continue;
+    for (const u of entry) {
+      if (typeof u === "string" && u.length > 0) mapOwnedUrls.add(u);
+    }
+  }
+
   // Legacy photo fields: template photo fields (excluding Q108) that are
   // NOT map-backed. Only these are owned by this legacy single-URL path;
   // map-backed fields go through assignMultiFieldPhotos / assignAdditional-
@@ -167,6 +183,9 @@ export async function savePhotoAssignments(
     if (!photoUrlSet.has(url)) {
       return { success: false, error: "Unknown photo in payload" };
     }
+    // UNASSIGNED and Q108 as drain-target produce no legacy mirror write,
+    // so they cannot create duplicate ownership via this action — skip both
+    // target-side and source-side guards for them.
     if (target === UNASSIGNED || target === Q108_ID) continue;
     if (isMapBacked(target)) {
       return {
@@ -176,6 +195,15 @@ export async function savePhotoAssignments(
     }
     if (!legacyPhotoFieldSet.has(target)) {
       return { success: false, error: `Unknown assignment target: ${target}` };
+    }
+    // Source-ownership guard. Atomic: if ANY incoming (url, target) pair
+    // fails this check, the whole operation is rejected before the Map
+    // invert and mirror rewrite happen. No partial application possible.
+    if (mapOwnedUrls.has(url)) {
+      return {
+        success: false,
+        error: `Photo is currently map-owned; release it via the dedicated assignment action before reassigning to ${target}`,
+      };
     }
   }
 

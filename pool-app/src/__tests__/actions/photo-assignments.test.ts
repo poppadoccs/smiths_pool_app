@@ -718,4 +718,81 @@ describe("savePhotoAssignments map-awareness", () => {
     expect(res.error).toMatch(/map-backed/i);
     expect(db.job.updateMany).not.toHaveBeenCalled();
   });
+
+  // --- Source-ownership rejection (HIGH fix for the duplicate-owner hole) ---
+
+  it("rejects a map-backed source URL (Q5) reassigned to a legacy target", async () => {
+    // Pre-state simulates a prior assignMultiFieldPhotos(Q5, ["u"]) landing
+    // before this legacy call. map[Q5] owns "u" via the reserved map. If
+    // savePhotoAssignments accepted the reassignment to a legacy mirror,
+    // both Q5 and pool_hero_photo would report "u" as theirs.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [Q5]: "u",
+        [RESERVED_PHOTO_MAP_KEY]: { [Q5]: ["u"] },
+      },
+      photos: [photoMeta("u")],
+      template: { fields: [photoField(Q5), photoField(LEGACY_SINGLE)] },
+    } as never);
+
+    const res = await savePhotoAssignments("job-1", { u: LEGACY_SINGLE });
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/map-owned/i);
+    expect(res.error).toContain(LEGACY_SINGLE);
+
+    // Atomic rejection — no DB write, no mutation. map[Q5] is untouched
+    // (in-memory mock state is not visible to the caller, but we assert
+    // by construction: updateMany was never called).
+    expect(db.job.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a map-backed source URL (Q108) reassigned to a legacy target", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [RESERVED_PHOTO_MAP_KEY]: { [Q108]: ["u"] },
+      },
+      photos: [photoMeta("u")],
+      template: { fields: [photoField(LEGACY_SINGLE)] },
+    } as never);
+
+    const res = await savePhotoAssignments("job-1", { u: LEGACY_SINGLE });
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/map-owned/i);
+    expect(db.job.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects atomically when a mixed batch contains one legal and one map-owned URL", async () => {
+    // The atomic guarantee matters: even though "u_free" is a legitimate
+    // legacy assignment, "u_mapowned" is map-owned, so the whole call
+    // fails. No partial mirror rewrite, no half-applied state.
+    const SECONDARY = "secondary_photo";
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [RESERVED_PHOTO_MAP_KEY]: { [Q5]: ["u_mapowned"] },
+      },
+      photos: [photoMeta("u_free"), photoMeta("u_mapowned")],
+      template: {
+        fields: [
+          photoField(Q5),
+          photoField(LEGACY_SINGLE),
+          photoField(SECONDARY),
+        ],
+      },
+    } as never);
+
+    const res = await savePhotoAssignments("job-1", {
+      u_free: LEGACY_SINGLE,
+      u_mapowned: SECONDARY,
+    });
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/map-owned/i);
+    // Atomic: no write at all, not even for the legal half of the batch.
+    expect(db.job.updateMany).not.toHaveBeenCalled();
+  });
 });
