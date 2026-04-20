@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import type { PhotoMetadata } from "@/lib/photos";
 import type { FormData, FormField } from "@/lib/forms";
+import { getMultiPhotoCap, RESERVED_PHOTO_MAP_KEY } from "@/lib/multi-photo";
 
 const Q108_ID = "108_additional_photos";
 const UNASSIGNED = "UNASSIGNED";
@@ -82,5 +83,94 @@ export async function savePhotoAssignments(
 
   revalidatePath(`/jobs/${jobId}`);
   revalidatePath("/admin");
+  return { success: true };
+}
+
+// Multi-photo slot writer for the 5 numbered fields with buffered per-field
+// caps (Q5/Q16/Q25/Q40/Q71). Single-URL fields go through savePhotoAssignments;
+// Q108 and remarks fields get their own dedicated actions.
+//
+// Persisted truth on save:
+//   formData["__photoAssignmentsByField"][fieldId] = urls[]  (new shape)
+//   formData[fieldId]                              = urls[0] | ""  (legacy mirror)
+//   formData["__photoAssignmentsReviewed"]         = true
+//
+// Per-field cap is the customer source of truth in multi-photo.ts; any cap
+// change is a one-line edit there, and the action rejects over-cap payloads
+// without silent truncation.
+export async function assignMultiFieldPhotos(
+  jobId: string,
+  fieldId: string,
+  urls: string[],
+): Promise<{ success: boolean; error?: string }> {
+  const cap = getMultiPhotoCap(fieldId);
+  if (cap === undefined) {
+    return {
+      success: false,
+      error: `Field ${fieldId} is not a multi-photo target`,
+    };
+  }
+
+  // De-duplicate while preserving caller-supplied order so the mirror
+  // (urls[0]) stays stable across reorders that only shuffle later slots.
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const u of urls) {
+    if (typeof u !== "string" || u.length === 0) continue;
+    if (seen.has(u)) continue;
+    seen.add(u);
+    unique.push(u);
+  }
+
+  if (unique.length > cap) {
+    return {
+      success: false,
+      error: `Too many photos for ${fieldId}: ${unique.length} > cap ${cap}`,
+    };
+  }
+
+  const job = await db.job.findUnique({ where: { id: jobId } });
+  if (!job) return { success: false, error: "Job not found" };
+  if (job.status !== "DRAFT") {
+    return { success: false, error: "Only draft jobs can assign photos" };
+  }
+
+  // Ownership: every URL must already exist in job.photos. Prevents a client
+  // from binding an arbitrary blob URL to a field.
+  const photos = (job.photos as PhotoMetadata[] | null) ?? [];
+  const photoUrlSet = new Set(photos.map((p) => p.url));
+  for (const u of unique) {
+    if (!photoUrlSet.has(u)) {
+      return { success: false, error: "Unknown photo in payload" };
+    }
+  }
+
+  const existing = (job.formData as FormData | null) ?? {};
+  const rawMap = existing[RESERVED_PHOTO_MAP_KEY];
+  const currentMap: Record<string, unknown> =
+    rawMap && typeof rawMap === "object" && !Array.isArray(rawMap)
+      ? { ...(rawMap as Record<string, unknown>) }
+      : {};
+
+  if (unique.length > 0) {
+    currentMap[fieldId] = unique;
+  } else {
+    delete currentMap[fieldId];
+  }
+
+  const next: FormData = { ...existing };
+  next[RESERVED_PHOTO_MAP_KEY] = currentMap;
+  next[fieldId] = unique[0] ?? "";
+  next[REVIEWED_FLAG] = true;
+
+  const updated = await db.job.updateMany({
+    where: { id: jobId, status: "DRAFT" },
+    data: { formData: next as unknown as object },
+  });
+  if (updated.count === 0) {
+    return { success: false, error: "Job is no longer editable" };
+  }
+
+  revalidatePath(`/jobs/${jobId}`);
   return { success: true };
 }
