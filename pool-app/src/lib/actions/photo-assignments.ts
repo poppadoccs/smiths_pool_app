@@ -9,31 +9,62 @@ import {
   RESERVED_PHOTO_MAP_KEY,
   ADDITIONAL_PHOTOS_FIELD_ID,
   ADDITIONAL_PHOTOS_CAP,
+  MULTI_PHOTO_FIELD_IDS,
+  REMARKS_FIELD_IDS,
 } from "@/lib/multi-photo";
 
 const Q108_ID = "108_additional_photos";
 const UNASSIGNED = "UNASSIGNED";
 const REVIEWED_FLAG = "__photoAssignmentsReviewed";
 
-// One-photo-one-owner enforcement (locked product rule, 2026-04-20).
-// Removes every URL in `incomingUrls` from OTHER field entries in the
-// shared __photoAssignmentsByField map, and keeps the legacy single-URL
-// mirror consistent for multi-photo fields that lose a URL.
+// True for fields that carry a single-URL legacy mirror at formData[fieldId]
+// alongside a map entry in __photoAssignmentsByField. Multi-photo fields and
+// remarks fields both carry a mirror that tracks urls[0]; Q108 does NOT have
+// a mirror (map-only, by design). Used by stealOneOwner to decide whether a
+// losing-side field's mirror needs to be kept consistent.
 //
-// Called by assignMultiFieldPhotos and assignAdditionalPhotos just before
-// they write their target field's new entry. Q108 has no legacy mirror
-// (by design), so when Q108 is the loser only the map is updated.
+// Keeping this predicate as a single surface means the remarks action (next
+// atomic task) inherits correct mirror maintenance without editing stealing
+// logic — just extending the action surface.
+function hasLegacyPhotoMirror(fieldId: string): boolean {
+  return MULTI_PHOTO_FIELD_IDS.has(fieldId) || REMARKS_FIELD_IDS.has(fieldId);
+}
+
+// One-photo-one-owner enforcement (locked product rule, 2026-04-20).
+// Two-pass steal that covers every current owner locus for a photo:
+//
+//   Pass 1 — map-backed owners. For every OTHER field with an entry in
+//   __photoAssignmentsByField, filter out any URL in the incoming set.
+//   When the loser carries a legacy mirror (multi-photo + remarks per
+//   hasLegacyPhotoMirror), also update formData[fid] to the remaining
+//   urls[0] so map and mirror stay consistent. Q108 is map-only.
+//
+//   Pass 2 — legacy mirror-only owners. A URL can also be owned purely
+//   via formData[fid] with NO map entry yet — either pre-migration data,
+//   a single-slot photo field written by savePhotoAssignments, or a
+//   remarks field prior to its dedicated action landing. This pass
+//   clears every template photo mirror whose value equals a stolen URL,
+//   closing the duplicate-ownership hole Codex flagged on 8088aa3.
+//
+// Called by assignMultiFieldPhotos and assignAdditionalPhotos just
+// before they write their target entry. Q108 is always excluded from
+// the Pass 2 mirror sweep (ADDITIONAL_PHOTOS_FIELD_ID has no mirror by
+// design), and the target field itself is excluded from both passes
+// (the target's entry is written by the caller after this helper).
 //
 // Mutates `currentMap` and `next` in place — both are local working
 // copies built by the caller from the fresh DB read.
 function stealOneOwner(
   currentMap: Record<string, unknown>,
   next: FormData,
+  templatePhotoFieldIds: readonly string[],
   targetFieldId: string,
   incomingUrls: string[],
 ): void {
   if (incomingUrls.length === 0) return;
   const incomingSet = new Set(incomingUrls);
+
+  // Pass 1: map-backed losers.
   for (const [fid, entry] of Object.entries(currentMap)) {
     if (fid === targetFieldId) continue;
     if (!Array.isArray(entry)) continue;
@@ -54,10 +85,22 @@ function stealOneOwner(
     } else {
       currentMap[fid] = filtered;
     }
-    // Multi-photo fields mirror urls[0] into formData[fieldId]; keep the
-    // mirror consistent with the post-steal list. Q108 has no mirror.
-    if (getMultiPhotoCap(fid) !== undefined) {
+    if (hasLegacyPhotoMirror(fid)) {
       next[fid] = filtered[0] ?? "";
+    }
+  }
+
+  // Pass 2: legacy mirror-only losers.
+  for (const fid of templatePhotoFieldIds) {
+    if (fid === targetFieldId) continue;
+    if (fid === ADDITIONAL_PHOTOS_FIELD_ID) continue;
+    const current = next[fid];
+    if (
+      typeof current === "string" &&
+      current.length > 0 &&
+      incomingSet.has(current)
+    ) {
+      next[fid] = "";
     }
   }
 }
@@ -89,21 +132,49 @@ export async function savePhotoAssignments(
 
   const photos = (job.photos as PhotoMetadata[] | null) ?? [];
   const fields = (job.template?.fields as FormField[] | null) ?? [];
-  const photoFieldIds = fields
+  const existing = (job.formData as FormData | null) ?? {};
+
+  // Map-aware rejection surface. The reserved __photoAssignmentsByField
+  // map is the authoritative source for map-backed fields; legacy mirrors
+  // are derived. Allowing this action to overwrite a mirror whose field
+  // has a map entry would silently split the two shapes (map wins in
+  // readFieldPhotoUrls, mirror drifts invisibly). Detection covers:
+  //   (a) curated sets — multi-photo + remarks via hasLegacyPhotoMirror
+  //   (b) Q108 — map-backed, no mirror (ADDITIONAL_PHOTOS_FIELD_ID)
+  //   (c) any field with a current map entry (defensive catch-all)
+  const rawMap = existing[RESERVED_PHOTO_MAP_KEY];
+  const mapEntries: Record<string, unknown> =
+    rawMap && typeof rawMap === "object" && !Array.isArray(rawMap)
+      ? (rawMap as Record<string, unknown>)
+      : {};
+  const isMapBacked = (id: string) =>
+    hasLegacyPhotoMirror(id) ||
+    id === ADDITIONAL_PHOTOS_FIELD_ID ||
+    mapEntries[id] !== undefined;
+
+  // Legacy photo fields: template photo fields (excluding Q108) that are
+  // NOT map-backed. Only these are owned by this legacy single-URL path;
+  // map-backed fields go through assignMultiFieldPhotos / assignAdditional-
+  // Photos and must not be rewritten here.
+  const legacyPhotoFieldIds = fields
     .filter((f) => f.type === "photo" && f.id !== Q108_ID)
-    .map((f) => f.id);
-  const photoFieldSet = new Set(photoFieldIds);
+    .map((f) => f.id)
+    .filter((id) => !isMapBacked(id));
+  const legacyPhotoFieldSet = new Set(legacyPhotoFieldIds);
   const photoUrlSet = new Set(photos.map((p) => p.url));
 
   for (const [url, target] of Object.entries(assignments)) {
     if (!photoUrlSet.has(url)) {
       return { success: false, error: "Unknown photo in payload" };
     }
-    if (
-      target !== UNASSIGNED &&
-      target !== Q108_ID &&
-      !photoFieldSet.has(target)
-    ) {
+    if (target === UNASSIGNED || target === Q108_ID) continue;
+    if (isMapBacked(target)) {
+      return {
+        success: false,
+        error: `Field ${target} is map-backed; use the dedicated assignment action instead`,
+      };
+    }
+    if (!legacyPhotoFieldSet.has(target)) {
       return { success: false, error: `Unknown assignment target: ${target}` };
     }
   }
@@ -116,11 +187,11 @@ export async function savePhotoAssignments(
     fieldToUrl.set(target, url);
   }
 
-  // Deterministic rewrite: every non-Q108 photo field gets the chosen URL or "".
-  // Preserves non-photo formData entries untouched.
-  const existing = (job.formData as FormData | null) ?? {};
+  // Deterministic rewrite of ONLY legacy (non-map-backed) photo field
+  // mirrors. Map-backed fields — their map entries and their mirrors —
+  // stay untouched here, which is what keeps map and mirror consistent.
   const next: FormData = { ...existing };
-  for (const fieldId of photoFieldIds) {
+  for (const fieldId of legacyPhotoFieldIds) {
     next[fieldId] = fieldToUrl.get(fieldId) ?? "";
   }
   next[REVIEWED_FLAG] = true;
@@ -181,7 +252,10 @@ export async function assignMultiFieldPhotos(
     };
   }
 
-  const job = await db.job.findUnique({ where: { id: jobId } });
+  const job = await db.job.findUnique({
+    where: { id: jobId },
+    include: { template: true },
+  });
   if (!job) return { success: false, error: "Job not found" };
   if (job.status !== "DRAFT") {
     return { success: false, error: "Only draft jobs can assign photos" };
@@ -197,6 +271,11 @@ export async function assignMultiFieldPhotos(
     }
   }
 
+  const templateFields = (job.template?.fields as FormField[] | null) ?? [];
+  const templatePhotoFieldIds = templateFields
+    .filter((f) => f.type === "photo")
+    .map((f) => f.id);
+
   const existing = (job.formData as FormData | null) ?? {};
   const rawMap = existing[RESERVED_PHOTO_MAP_KEY];
   const currentMap: Record<string, unknown> =
@@ -206,10 +285,11 @@ export async function assignMultiFieldPhotos(
 
   const next: FormData = { ...existing };
 
-  // One-photo-one-owner: remove incoming URLs from every OTHER field's
-  // map entry (multi-photo losers also get their legacy mirror cleared to
-  // the remaining urls[0] so map and mirror stay consistent).
-  stealOneOwner(currentMap, next, fieldId, unique);
+  // One-photo-one-owner: strip incoming URLs from every OTHER map entry
+  // AND from every OTHER template photo field's legacy mirror. The mirror
+  // sweep closes the legacy-only-owner hole where a URL was previously
+  // held via formData[fid] alone (no map entry).
+  stealOneOwner(currentMap, next, templatePhotoFieldIds, fieldId, unique);
 
   if (unique.length > 0) {
     currentMap[fieldId] = unique;
@@ -277,7 +357,10 @@ export async function assignAdditionalPhotos(
     };
   }
 
-  const job = await db.job.findUnique({ where: { id: jobId } });
+  const job = await db.job.findUnique({
+    where: { id: jobId },
+    include: { template: true },
+  });
   if (!job) return { success: false, error: "Job not found" };
   if (job.status !== "DRAFT") {
     return { success: false, error: "Only draft jobs can assign photos" };
@@ -293,6 +376,11 @@ export async function assignAdditionalPhotos(
     }
   }
 
+  const templateFields = (job.template?.fields as FormField[] | null) ?? [];
+  const templatePhotoFieldIds = templateFields
+    .filter((f) => f.type === "photo")
+    .map((f) => f.id);
+
   const existing = (job.formData as FormData | null) ?? {};
   const rawMap = existing[RESERVED_PHOTO_MAP_KEY];
   const currentMap: Record<string, unknown> =
@@ -302,10 +390,17 @@ export async function assignAdditionalPhotos(
 
   const next: FormData = { ...existing };
 
-  // One-photo-one-owner: remove incoming URLs from every OTHER field's
-  // map entry. Multi-photo losers get their legacy mirror cleared to the
-  // remaining urls[0]; Q108 has no mirror.
-  stealOneOwner(currentMap, next, ADDITIONAL_PHOTOS_FIELD_ID, unique);
+  // One-photo-one-owner: strip incoming URLs from every OTHER map entry
+  // AND from every OTHER template photo field's legacy mirror. Q108 has
+  // no mirror (so no self-mirror write), but any stolen URLs still clear
+  // from losing-side map entries and from mirror-only owners elsewhere.
+  stealOneOwner(
+    currentMap,
+    next,
+    templatePhotoFieldIds,
+    ADDITIONAL_PHOTOS_FIELD_ID,
+    unique,
+  );
 
   if (unique.length > 0) {
     currentMap[ADDITIONAL_PHOTOS_FIELD_ID] = unique;

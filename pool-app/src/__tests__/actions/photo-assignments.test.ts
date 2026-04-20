@@ -16,6 +16,7 @@ vi.mock("next/cache", () => ({
 import {
   assignMultiFieldPhotos,
   assignAdditionalPhotos,
+  savePhotoAssignments,
 } from "@/lib/actions/photo-assignments";
 import { db } from "@/lib/db";
 import {
@@ -30,6 +31,14 @@ const Q5 = "5_picture_of_pool_and_spa_if_applicable";
 const Q5_CAP = MULTI_PHOTO_CAPS[Q5]!; // 5, locked 2026-04-20
 const Q16 = "16_photo_of_pool_pump";
 const Q108 = ADDITIONAL_PHOTOS_FIELD_ID; // "108_additional_photos"
+const REMARKS_Q15 = "15_remarks_notes"; // canonical remarks field id
+const LEGACY_SINGLE = "pool_hero_photo"; // fictional template single-slot id
+
+// Minimal FormField-like shapes for template mocking. The action only
+// reads `id` and `type`, so the other keys are just placeholders.
+function photoField(id: string) {
+  return { id, type: "photo", label: id, required: false, order: 0 };
+}
 
 function writtenFormData(): Record<string, unknown> {
   const calls = vi.mocked(db.job.updateMany).mock.calls;
@@ -518,5 +527,195 @@ describe("one-photo-one-owner enforcement", () => {
     // Q5 wasn't touched by stealing — preserved verbatim.
     expect(map[Q5]).toEqual(["a", "b"]);
     expect(map[Q108]).toEqual(["c"]);
+  });
+
+  it("clears a legacy mirror-only owner when the URL is reassigned elsewhere", async () => {
+    // Codex HIGH from the assignment-path review: a URL held ONLY via
+    // formData[fid] (no map entry) could remain as a second owner after
+    // assignAdditionalPhotos took it. The legacy-mirror sweep in Pass 2
+    // of stealOneOwner is what closes this. Requires template-driven
+    // iteration, so the findUnique now includes template.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [Q5]: "shared", // mirror only — no __photoAssignmentsByField entry
+      },
+      photos: [photoMeta("shared")],
+      template: { fields: [photoField(Q5)] },
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", ["shared"]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    const map = saved[RESERVED_PHOTO_MAP_KEY] as Record<string, unknown>;
+    // Q108 is the new owner.
+    expect(map[Q108]).toEqual(["shared"]);
+    // Q5 legacy mirror cleared — no duplicate ownership through the mirror.
+    expect(saved[Q5]).toBe("");
+  });
+
+  it("clears a legacy single-slot photo mirror when stealing to assignMultiFieldPhotos", async () => {
+    // Same Pass-2 proof, but from the multi-photo target direction and
+    // against a non-multi-photo, non-remarks legacy single-slot field
+    // (the kind savePhotoAssignments owns). Template iteration handles
+    // this too, so ownership moves cleanly to Q16.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: { [LEGACY_SINGLE]: "hero-url" },
+      photos: [photoMeta("hero-url")],
+      template: {
+        fields: [photoField(LEGACY_SINGLE), photoField(Q16)],
+      },
+    } as never);
+
+    const res = await assignMultiFieldPhotos("job-1", Q16, ["hero-url"]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    const map = saved[RESERVED_PHOTO_MAP_KEY] as Record<string, unknown>;
+    expect(map[Q16]).toEqual(["hero-url"]);
+    expect(saved[Q16]).toBe("hero-url");
+    // Legacy single-slot mirror cleared.
+    expect(saved[LEGACY_SINGLE]).toBe("");
+  });
+
+  it("structural proof: remarks fields with map entries get their mirrors updated on steal", async () => {
+    // If hasLegacyPhotoMirror ever regresses to multi-photo-only, this
+    // test fails: the remarks field's post-steal mirror would not update.
+    // Proves the predicate already accepts remarks IDs, so the upcoming
+    // assignRemarksFieldPhotos action inherits correct mirror behavior.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [REMARKS_Q15]: "shared", // remarks mirror
+        [RESERVED_PHOTO_MAP_KEY]: { [REMARKS_Q15]: ["shared", "r2"] },
+      },
+      photos: [photoMeta("shared"), photoMeta("r2")],
+      template: { fields: [photoField(REMARKS_Q15)] },
+    } as never);
+
+    const res = await assignAdditionalPhotos("job-1", ["shared"]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    const map = saved[RESERVED_PHOTO_MAP_KEY] as Record<string, unknown>;
+    // Remarks map filtered.
+    expect(map[REMARKS_Q15]).toEqual(["r2"]);
+    // Remarks mirror updated to the new urls[0] — only possible if
+    // hasLegacyPhotoMirror returns true for remarks ids.
+    expect(saved[REMARKS_Q15]).toBe("r2");
+  });
+});
+
+describe("savePhotoAssignments map-awareness", () => {
+  it("rejects an assignment that targets a map-backed multi-photo field", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [Q5]: "x",
+        [RESERVED_PHOTO_MAP_KEY]: { [Q5]: ["x", "y"] },
+      },
+      photos: [photoMeta("other")],
+      template: { fields: [photoField(Q5), photoField(LEGACY_SINGLE)] },
+    } as never);
+
+    const res = await savePhotoAssignments("job-1", { other: Q5 });
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/map-backed/i);
+    // No write should happen at all.
+    expect(db.job.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects an assignment that targets Q108 as a mirror target (Q108 is map-backed)", async () => {
+    // The legacy "drain target" use of Q108 in savePhotoAssignments
+    // continues to work (target === Q108_ID is skipped), but an admin
+    // writing Q108 as a mirror-override target would have hit the old
+    // unknown-target error. With map-awareness, the early continue still
+    // applies, so this verifies Q108-as-drain-target did not regress.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {},
+      photos: [photoMeta("drain-me")],
+      template: { fields: [photoField(LEGACY_SINGLE)] },
+    } as never);
+
+    const res = await savePhotoAssignments("job-1", {
+      "drain-me": Q108, // Q108 as drain target — legacy semantic
+    });
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    // Q108 was NOT persisted as a mirror (continue path); legacy single
+    // slot stays cleared since no mirror target was given.
+    expect(saved).not.toHaveProperty(Q108);
+    expect(saved[LEGACY_SINGLE]).toBe("");
+  });
+
+  it("does not touch a map-backed field mirror even when no assignment targets it", async () => {
+    // Regression guard for the MED divergence Codex flagged: empty
+    // assignments must not "clear" Q5's mirror to "" while leaving
+    // map[Q5] populated.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [Q5]: "x",
+        [RESERVED_PHOTO_MAP_KEY]: { [Q5]: ["x", "y"] },
+        [LEGACY_SINGLE]: "already_there",
+      },
+      photos: [photoMeta("whatever")],
+      template: { fields: [photoField(Q5), photoField(LEGACY_SINGLE)] },
+    } as never);
+
+    const res = await savePhotoAssignments("job-1", {});
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    // Q5 map and mirror BOTH preserved — savePhotoAssignments left
+    // map-backed alone.
+    expect(saved[Q5]).toBe("x");
+    expect(saved[RESERVED_PHOTO_MAP_KEY]).toEqual({ [Q5]: ["x", "y"] });
+    // Legacy single-slot field cleared (empty assignments → "").
+    expect(saved[LEGACY_SINGLE]).toBe("");
+  });
+
+  it("still rewrites legacy (non-map-backed) photo field mirrors", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {},
+      photos: [photoMeta("u1")],
+      template: { fields: [photoField(LEGACY_SINGLE)] },
+    } as never);
+
+    const res = await savePhotoAssignments("job-1", { u1: LEGACY_SINGLE });
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    expect(saved[LEGACY_SINGLE]).toBe("u1");
+    expect(saved[REVIEWED_FLAG]).toBe(true);
+  });
+
+  it("rejects a remarks field target (remarks are map-backed via hasLegacyPhotoMirror)", async () => {
+    // Forward-compat proof: even before assignRemarksFieldPhotos lands,
+    // savePhotoAssignments already refuses to write remarks mirrors.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {},
+      photos: [photoMeta("r1")],
+      template: { fields: [photoField(REMARKS_Q15)] },
+    } as never);
+
+    const res = await savePhotoAssignments("job-1", { r1: REMARKS_Q15 });
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/map-backed/i);
+    expect(db.job.updateMany).not.toHaveBeenCalled();
   });
 });
