@@ -589,6 +589,45 @@ describe("one-photo-one-owner enforcement", () => {
     expect(saved[LEGACY_SINGLE]).toBe("");
   });
 
+  it("clears a stale Q108 legacy mirror when the URL is stolen to a different owner", async () => {
+    // Pre-Slice-1 contamination case: a historical job can carry a stale
+    // single-URL string at formData["108_additional_photos"] written by
+    // the old PhotoFieldInput → RHF → autosave path, even though the
+    // post-slice assignAdditionalPhotos contract is map-only. If a later
+    // action steals that URL to another owner, stealOneOwner Pass 2 MUST
+    // clear the stale Q108 mirror — otherwise the URL ends up owned in
+    // two places (new owner's map entry AND Q108's legacy mirror) and
+    // readFieldPhotoUrls surfaces the duplicate at render time.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        // Stale Q108 legacy mirror — historical pre-slice shape.
+        [Q108]: "legacy_q108_url",
+        // No Q108 map entry; the contamination is mirror-only.
+      },
+      photos: [photoMeta("legacy_q108_url")],
+      // Q108 must be in the template so it's enumerated by
+      // templatePhotoFieldIds and reachable by Pass 2. Remarks-photo owner
+      // ids are synthetic and never in the template.
+      template: { fields: [photoField(Q108)] },
+    } as never);
+
+    const res = await assignRemarksFieldPhotos("job-1", REMARKS_Q15_PHOTOS, [
+      "legacy_q108_url",
+    ]);
+    expect(res).toEqual({ success: true });
+
+    const saved = writtenFormData();
+    const map = saved[RESERVED_PHOTO_MAP_KEY] as Record<string, unknown>;
+    // New owner holds the URL under the map.
+    expect(map[REMARKS_Q15_PHOTOS]).toEqual(["legacy_q108_url"]);
+    // Stale Q108 mirror cleared — no duplicate ownership via the mirror.
+    expect(saved[Q108]).toBe("");
+    // Defensive: no Q108 map entry was invented.
+    expect(map).not.toHaveProperty(Q108);
+  });
+
   it("stealing from a remarks-photo owner preserves map-only semantics (no mirror write)", async () => {
     // Locked 2026-04-20: remarks-photo owner ids (*_remarks_notes_photos)
     // are map-only. If hasLegacyPhotoMirror ever regresses to include

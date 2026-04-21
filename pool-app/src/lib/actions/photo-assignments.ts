@@ -93,9 +93,16 @@ function stealOneOwner(
   }
 
   // Pass 2: legacy mirror-only losers.
+  // Q108 is NOT skipped here. The post-slice Q108 contract is map-only
+  // (assignAdditionalPhotos never writes a mirror), but historical jobs
+  // can still carry a stale string at formData["108_additional_photos"]
+  // from the pre-slice PhotoFieldInput → RHF → autosave path. Without
+  // clearing it, a steal to any other owner would leave the URL owned
+  // in two places: the new owner's map entry AND Q108's stale mirror.
+  // The target-owner exclusion above is preserved — only the skip for
+  // Q108 as a *losing* field is removed.
   for (const fid of templatePhotoFieldIds) {
     if (fid === targetFieldId) continue;
-    if (fid === ADDITIONAL_PHOTOS_FIELD_ID) continue;
     const current = next[fid];
     if (
       typeof current === "string" &&
