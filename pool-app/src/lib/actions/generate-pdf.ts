@@ -10,6 +10,7 @@ import {
 } from "@/lib/forms";
 import { type PhotoMetadata } from "@/lib/photos";
 import {
+  ADDITIONAL_PHOTOS_FIELD_ID,
   readFieldPhotoUrls,
   remarksPhotoOwnerIdFor,
   REMARKS_FIELD_IDS,
@@ -145,12 +146,16 @@ export async function generateJobPdf(
   doc.setFontSize(10);
   let currentSection = "";
 
-  // Resolve each photo-question field to a photo URL via a 3-pass strategy.
-  // A single consumption set (`consumedPhotoIdxs`) ensures no photo is
-  // rendered twice across passes or under Q108.
+  // Resolve each photo-question field to its owned photo URLs via a 3-pass
+  // strategy. A single consumption set (`consumedPhotoIdxs`) ensures no
+  // photo is rendered twice across passes or under Q108.
   //
-  //   Pass 1 — explicit binding: URL match, then filename match. External
-  //            URLs not in the pool are still rendered as-is.
+  //   Pass 1 — explicit binding: read every URL a field owns via
+  //            `readFieldPhotoUrls` (map-first, legacy-mirror fallback),
+  //            match each to the pool by URL or legacy filename. External
+  //            URLs not in the pool are rendered verbatim. Multi-photo
+  //            fields (Q5/Q16/Q25/Q40/Q71) consume ALL their owned URLs
+  //            here so slots 1+ never fall through to the Q108 drain.
   //   Pass 2 — legacy sequential fallback: any non-Q108 photo field still
   //            unresolved claims the next unconsumed photo in template
   //            order. Only fires for UNREVIEWED legacy jobs with no
@@ -163,31 +168,37 @@ export async function generateJobPdf(
   //            render time via `photosQueue`.
   const allJobPhotosArr = (job.photos as PhotoMetadata[] | null) ?? [];
   const consumedPhotoIdxs = new Set<number>();
-  const fieldResolvedUrl = new Map<string, string>();
+  const fieldResolvedUrls = new Map<string, string[]>();
 
-  // Pass 1 — explicit binding.
+  // Pass 1 — explicit binding via the authoritative map-first read path.
   for (const field of template.fields) {
     if (field.type !== "photo") continue;
-    const raw = formData?.[field.id];
-    if (typeof raw !== "string" || !raw) continue;
-    const matchesRaw = raw.startsWith("http")
-      ? (p: PhotoMetadata) => p.url === raw
-      : (p: PhotoMetadata) => p.filename === raw;
-    const idx = allJobPhotosArr.findIndex(
-      (p, i) => !consumedPhotoIdxs.has(i) && matchesRaw(p),
-    );
-    if (idx >= 0) {
-      consumedPhotoIdxs.add(idx);
-      fieldResolvedUrl.set(field.id, allJobPhotosArr[idx].url);
-    } else if (
-      raw.startsWith("http") &&
-      !allJobPhotosArr.some((p) => p.url === raw)
-    ) {
-      // External URL never in the pool — still render it verbatim.
-      fieldResolvedUrl.set(field.id, raw);
+    const owned = readFieldPhotoUrls(formData, field.id);
+    if (owned.length === 0) continue;
+    const resolved: string[] = [];
+    for (const raw of owned) {
+      const matchesRaw = raw.startsWith("http")
+        ? (p: PhotoMetadata) => p.url === raw
+        : (p: PhotoMetadata) => p.filename === raw;
+      const idx = allJobPhotosArr.findIndex(
+        (p, i) => !consumedPhotoIdxs.has(i) && matchesRaw(p),
+      );
+      if (idx >= 0) {
+        consumedPhotoIdxs.add(idx);
+        resolved.push(allJobPhotosArr[idx].url);
+      } else if (
+        raw.startsWith("http") &&
+        !allJobPhotosArr.some((p) => p.url === raw)
+      ) {
+        // External URL never in the pool — still render it verbatim.
+        resolved.push(raw);
+      }
+      // Orphan filename / duplicate already consumed → leave unresolved
+      // so pass 2 can claim a photo by order instead.
     }
-    // Orphan filename / duplicate already consumed → leave unresolved
-    // so pass 2 can claim a photo by order instead.
+    if (resolved.length > 0) {
+      fieldResolvedUrls.set(field.id, resolved);
+    }
   }
 
   // Pass 2 gate — only runs for untouched legacy jobs.
@@ -209,20 +220,20 @@ export async function generateJobPdf(
   const hasAnyResolvableExplicit = template.fields.some(
     (f) =>
       f.type === "photo" &&
-      f.id !== "108_additional_photos" &&
-      fieldResolvedUrl.has(f.id),
+      f.id !== ADDITIONAL_PHOTOS_FIELD_ID &&
+      fieldResolvedUrls.has(f.id),
   );
   if (!reviewed && !hasAnyResolvableExplicit) {
     for (const field of template.fields) {
       if (field.type !== "photo") continue;
-      if (field.id === "108_additional_photos") continue;
-      if (fieldResolvedUrl.has(field.id)) continue;
+      if (field.id === ADDITIONAL_PHOTOS_FIELD_ID) continue;
+      if (fieldResolvedUrls.has(field.id)) continue;
       const idx = allJobPhotosArr.findIndex(
         (_, i) => !consumedPhotoIdxs.has(i),
       );
       if (idx < 0) continue; // out of photos — leave unresolved → "—"
       consumedPhotoIdxs.add(idx);
-      fieldResolvedUrl.set(field.id, allJobPhotosArr[idx].url);
+      fieldResolvedUrls.set(field.id, [allJobPhotosArr[idx].url]);
     }
   }
 
@@ -272,17 +283,29 @@ export async function generateJobPdf(
       doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
       const photoLabelLines = doc.splitTextToSize(field.label, CONTENT_WIDTH);
+      const labelH = photoLabelLines.length * 4 + 4;
+      const isQ108 = field.id === ADDITIONAL_PHOTOS_FIELD_ID;
 
-      // Q108 "Additional Photos" — drain ALL remaining queue photos here.
-      // By the time we reach this field every prior photo field has already
-      // consumed its share, so photosQueue holds only the leftover extras.
-      if (field.id === "108_additional_photos") {
-        const directUrl = fieldResolvedUrl.get(field.id) ?? null;
-        const allExtra: string[] = directUrl ? [directUrl] : [];
-        allExtra.push(...photosQueue.splice(0));
-        const labelH = photoLabelLines.length * 4 + 4;
+      // Resolve the URL list for this field:
+      //   - Q108 drains any remaining queue photos on top of its own owned
+      //     URLs — by the time we reach Q108, every prior photo field has
+      //     already consumed its share.
+      //   - Every other photo field renders exactly the URLs it owns via
+      //     Pass 1's map-first binding, which includes multi-photo slots
+      //     1+ for Q5/Q16/Q25/Q40/Q71. Owning the full list here is what
+      //     keeps those slots pinned to their own heading instead of
+      //     leaking into the Q108 drain.
+      const owned = fieldResolvedUrls.get(field.id) ?? [];
+      const urlsToRender: string[] = isQ108
+        ? [...owned, ...photosQueue.splice(0)]
+        : owned;
 
-        if (allExtra.length === 0) {
+      if (urlsToRender.length === 0) {
+        // Preserve the two pre-existing empty-state layouts:
+        //   - Q108: label on one line, "—" on the next (own-block shape).
+        //   - Standalone photo field: label at MARGIN, "—" at MARGIN+85
+        //     on the same line (question/answer row shape).
+        if (isQ108) {
           if (y + labelH + 5 > 280) {
             doc.addPage();
             y = MARGIN;
@@ -292,153 +315,117 @@ export async function generateJobPdf(
           doc.setFont("helvetica", "normal");
           doc.text("—", MARGIN, y);
           y += 5;
-          continue;
-        }
-
-        // Defer the label draw so it paginates together with the first
-        // image that successfully renders — avoids a stranded "Additional
-        // Photos" heading at the bottom of a page with its images on the
-        // next page. Failures before the first success are buffered and
-        // drawn alongside the label once a success lands, so no failed
-        // photo is silently dropped from the PDF.
-        let labelDrawn = false;
-        let preLabelFailures = 0;
-        for (const url of allExtra) {
-          try {
-            const res = await fetch(url);
-            const buf = await res.arrayBuffer();
-            const b64 = Buffer.from(buf).toString("base64");
-            const imgProps = doc.getImageProperties(b64);
-            const { imgW, imgH } = fitPhoto(imgProps);
-            const imgX = MARGIN + (CONTENT_WIDTH - imgW) / 2;
-            if (!labelDrawn) {
-              // Bind the label only to the first thing rendered beneath
-              // it (a buffered error line or this image) so the heading
-              // can't orphan at the bottom. Remaining failures and the
-              // image paginate independently so the combined content
-              // can never exceed a single page.
-              const firstBelowH = preLabelFailures > 0 ? 5 : imgH + 8;
-              if (y + labelH + firstBelowH > 280) {
-                doc.addPage();
-                y = MARGIN;
-              }
-              doc.setFont("helvetica", "bold");
-              doc.setFontSize(9);
-              doc.text(photoLabelLines, MARGIN, y);
-              y += labelH;
-              if (preLabelFailures > 0) {
-                doc.setFont("helvetica", "italic");
-                doc.setFontSize(8);
-                for (let i = 0; i < preLabelFailures; i++) {
-                  // First line is bound to the label above; subsequent
-                  // lines paginate on their own like post-label catches.
-                  if (i > 0 && y + 5 > 280) {
-                    doc.addPage();
-                    y = MARGIN;
-                  }
-                  doc.text("[photo could not be loaded]", MARGIN, y);
-                  y += 5;
-                }
-                preLabelFailures = 0;
-              }
-              labelDrawn = true;
-            }
-            if (y + imgH + 8 > 280) {
-              doc.addPage();
-              y = MARGIN;
-            }
-            doc.addImage(b64, "JPEG", imgX, y, imgW, imgH, undefined, "FAST");
-            y += imgH + 6;
-          } catch {
-            if (!labelDrawn) {
-              // Don't draw the label yet — a later fetch may succeed and
-              // carry the label + these failure markers with it. Track
-              // the count for the combined draw (or the all-failed
-              // fallback if no image ever succeeds).
-              preLabelFailures++;
-              continue;
-            }
-            if (y + 5 > 280) {
-              doc.addPage();
-              y = MARGIN;
-            }
-            doc.setFont("helvetica", "italic");
-            doc.setFontSize(8);
-            doc.text("[photo could not be loaded]", MARGIN, y);
-            y += 5;
-          }
-        }
-        if (!labelDrawn) {
-          // Every extra photo failed to fetch. Still surface the heading so
-          // the reader sees the question was present, with a consolidated
-          // error line.
-          if (y + labelH + 5 > 280) {
+        } else {
+          const fallbackLines = doc.splitTextToSize("—", CONTENT_WIDTH - 85);
+          const photoBlockH =
+            Math.max(photoLabelLines.length, fallbackLines.length) * 4 + 2;
+          if (y + photoBlockH > 280) {
             doc.addPage();
             y = MARGIN;
           }
-          doc.setFont("helvetica", "bold");
-          doc.setFontSize(9);
           doc.text(photoLabelLines, MARGIN, y);
-          y += labelH;
-          doc.setFont("helvetica", "italic");
-          doc.setFontSize(8);
-          doc.text(
-            preLabelFailures > 1
-              ? `[${preLabelFailures} photos could not be loaded]`
-              : "[photo could not be loaded]",
-            MARGIN,
-            y,
-          );
-          y += 5;
+          doc.setFont("helvetica", "normal");
+          doc.text(fallbackLines, MARGIN + 85, y);
+          y += photoBlockH;
         }
         continue;
       }
 
-      // All other photo fields render only the photo resolved from this
-      // field's formData entry (either a URL or a legacy filename). Gallery-
-      // only photos stay queued for Q108 so they never appear as if answering
-      // a different question.
-      const photoUrl = fieldResolvedUrl.get(field.id) ?? null;
-
-      if (photoUrl) {
+      // Defer the label draw so it paginates together with the first image
+      // that successfully renders — avoids a stranded heading at the bottom
+      // of a page with its images on the next page. Failures before the
+      // first success are buffered and drawn alongside the label once a
+      // success lands, so no failed photo is silently dropped.
+      let labelDrawn = false;
+      let preLabelFailures = 0;
+      for (const url of urlsToRender) {
         try {
-          const res = await fetch(photoUrl);
+          const res = await fetch(url);
           const buf = await res.arrayBuffer();
           const b64 = Buffer.from(buf).toString("base64");
           const imgProps = doc.getImageProperties(b64);
           const { imgW, imgH } = fitPhoto(imgProps);
           const imgX = MARGIN + (CONTENT_WIDTH - imgW) / 2;
-
-          const blockH = photoLabelLines.length * 4 + 3 + imgH + 8;
-          if (y + blockH > 280) {
+          if (!labelDrawn) {
+            // Bind the label only to the first thing rendered beneath
+            // it (a buffered error line or this image) so the heading
+            // can't orphan at the bottom. Remaining failures and the
+            // image paginate independently so the combined content
+            // can never exceed a single page.
+            const firstBelowH = preLabelFailures > 0 ? 5 : imgH + 8;
+            if (y + labelH + firstBelowH > 280) {
+              doc.addPage();
+              y = MARGIN;
+            }
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(9);
+            doc.text(photoLabelLines, MARGIN, y);
+            y += labelH;
+            if (preLabelFailures > 0) {
+              doc.setFont("helvetica", "italic");
+              doc.setFontSize(8);
+              for (let i = 0; i < preLabelFailures; i++) {
+                // First line is bound to the label above; subsequent
+                // lines paginate on their own like post-label catches.
+                if (i > 0 && y + 5 > 280) {
+                  doc.addPage();
+                  y = MARGIN;
+                }
+                doc.text("[photo could not be loaded]", MARGIN, y);
+                y += 5;
+              }
+              preLabelFailures = 0;
+            }
+            labelDrawn = true;
+          }
+          if (y + imgH + 8 > 280) {
             doc.addPage();
             y = MARGIN;
           }
-          doc.text(photoLabelLines, MARGIN, y);
-          y += photoLabelLines.length * 4 + 3;
           doc.addImage(b64, "JPEG", imgX, y, imgW, imgH, undefined, "FAST");
-          y += imgH + 8;
-          continue;
+          y += imgH + 6;
         } catch {
-          // fall through to text fallback
+          if (!labelDrawn) {
+            // Don't draw the label yet — a later fetch may succeed and
+            // carry the label + these failure markers with it. Track
+            // the count for the combined draw (or the all-failed
+            // fallback if no image ever succeeds).
+            preLabelFailures++;
+            continue;
+          }
+          if (y + 5 > 280) {
+            doc.addPage();
+            y = MARGIN;
+          }
+          doc.setFont("helvetica", "italic");
+          doc.setFontSize(8);
+          doc.text("[photo could not be loaded]", MARGIN, y);
+          y += 5;
         }
       }
-
-      // No URL (empty field or orphan legacy filename) or fetch failed.
-      const fallbackLines = doc.splitTextToSize(
-        photoUrl ? "[photo could not be loaded]" : "—",
-        CONTENT_WIDTH - 85,
-      );
-      const photoBlockH =
-        Math.max(photoLabelLines.length, fallbackLines.length) * 4 + 2;
-      if (y + photoBlockH > 280) {
-        doc.addPage();
-        y = MARGIN;
+      if (!labelDrawn) {
+        // Every photo failed to fetch. Still surface the heading so the
+        // reader sees the question was present, with a consolidated error
+        // line.
+        if (y + labelH + 5 > 280) {
+          doc.addPage();
+          y = MARGIN;
+        }
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9);
+        doc.text(photoLabelLines, MARGIN, y);
+        y += labelH;
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(8);
+        doc.text(
+          preLabelFailures > 1
+            ? `[${preLabelFailures} photos could not be loaded]`
+            : "[photo could not be loaded]",
+          MARGIN,
+          y,
+        );
+        y += 5;
       }
-      doc.text(photoLabelLines, MARGIN, y);
-      doc.setFont("helvetica", "normal");
-      doc.text(fallbackLines, MARGIN + 85, y);
-      y += photoBlockH;
       continue;
     }
 
