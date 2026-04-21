@@ -261,6 +261,57 @@ describe("MultiPhotoField", () => {
     expect(screen.queryByRole("button", { name: /^Remove /i })).toBeNull();
   });
 
+  it("renders 'Add from gallery' in the empty state (jobPhotos=[]) alongside 'Take photo'", () => {
+    // Regression: the button used to be gated on `jobPhotos.length > 0`,
+    // so a fresh job with no uploads yet hid the gallery option entirely
+    // and forced users to discover it by taking a photo first. Both
+    // buttons should be visible in the empty state for every map-backed
+    // owner that uses this component.
+    render(
+      <MultiPhotoField
+        jobId="job-1"
+        field={photoField(Q5_ID, "Q5")}
+        jobPhotos={[]}
+        formData={null}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /Add from gallery/i }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Take photo/i })).toBeTruthy();
+  });
+
+  it("renders 'Add from gallery' in the empty state for Q108 too", () => {
+    render(
+      <MultiPhotoField
+        jobId="job-1"
+        field={photoField(Q108_ID, "Q108")}
+        jobPhotos={[]}
+        formData={null}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /Add from gallery/i }),
+    ).toBeTruthy();
+  });
+
+  it("empty-state gallery picker tells the user what to do instead of 'all already attached'", () => {
+    // Opening the picker with no uploads yet used to show the wrong
+    // message ("all uploaded photos are already attached here") because
+    // availableToAdd is also empty in that case. Differentiate the
+    // two empty-state reasons so the user gets an accurate hint.
+    render(
+      <MultiPhotoField
+        jobId="job-1"
+        field={photoField(Q5_ID, "Q5")}
+        jobPhotos={[]}
+        formData={null}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Add from gallery/i }));
+    expect(screen.getByText(/No photos uploaded yet/i)).toBeTruthy();
+  });
+
   it("reopen/read path: assigned photos persist via __photoAssignmentsByField even with no legacy mirror", () => {
     // Simulates reopening a draft that was written ONLY via assignMultiFieldPhotos
     // (map entry present, legacy mirror also present per that action's write

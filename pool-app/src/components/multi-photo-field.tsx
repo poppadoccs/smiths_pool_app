@@ -175,18 +175,21 @@ export function MultiPhotoField({
           </span>
           {!disabled && (
             <div className="flex gap-2">
-              {jobPhotos.length > 0 && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsPickerOpen((v) => !v)}
-                  disabled={isPending || isUploading}
-                >
-                  <ImagePlus className="mr-1 size-3.5" />
-                  {isPickerOpen ? "Done" : "Add from gallery"}
-                </Button>
-              )}
+              {/* "Add from gallery" always rendered — showing it only when
+                  jobPhotos.length > 0 hid the option during the empty
+                  state and forced users to discover it by taking a photo
+                  first. Clicking it when no photos are uploaded yet opens
+                  the picker with a message that tells them what to do. */}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setIsPickerOpen((v) => !v)}
+                disabled={isPending || isUploading}
+              >
+                <ImagePlus className="mr-1 size-3.5" />
+                {isPickerOpen ? "Done" : "Add from gallery"}
+              </Button>
               <Button
                 type="button"
                 variant="outline"
@@ -261,8 +264,9 @@ export function MultiPhotoField({
             </p>
             {availableToAdd.length === 0 ? (
               <p className="text-xs text-zinc-500">
-                No available photos — all uploaded photos are already attached
-                here.
+                {jobPhotos.length === 0
+                  ? "No photos uploaded yet — tap Take photo, or upload from the Photos card at the top."
+                  : "No available photos — all uploaded photos are already attached here."}
               </p>
             ) : (
               <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
