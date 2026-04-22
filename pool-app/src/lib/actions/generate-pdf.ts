@@ -549,7 +549,7 @@ export async function generateJobPdf(
 
     doc.setFontSize(11);
     doc.setFont("helvetica", "bold");
-    doc.text("Worker Signature", MARGIN, y);
+    doc.text("Inspected by", MARGIN, y);
     y += 6;
 
     try {
