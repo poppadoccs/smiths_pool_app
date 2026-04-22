@@ -8,6 +8,7 @@ type SubmissionEmailProps = {
   formData: FormData;
   template: FormTemplate;
   photos: PhotoMetadata[];
+  editUrl?: string;
 };
 
 /**
@@ -21,6 +22,7 @@ export function buildSubmissionEmail({
   formData,
   template,
   photos,
+  editUrl,
 }: SubmissionEmailProps): string {
   const formRows = template.fields
     .map((field) => {
@@ -97,6 +99,22 @@ export function buildSubmissionEmail({
     <p style="font-size: 14px; color: #888; margin: 0 0 20px 0;">
       Submitted by <strong>${escapeHtml(submittedBy)}</strong>
     </p>
+
+    ${
+      editUrl
+        ? `
+    <p style="margin: 0 0 8px 0;">
+      <a href="${escapeHtml(editUrl)}"
+         style="display: inline-block; background: #2563eb; color: #fff; text-decoration: none; font-weight: 600; padding: 10px 16px; border-radius: 8px; font-size: 14px;">
+        Open editable version
+      </a>
+    </p>
+    <p style="font-size: 12px; color: #888; margin: 0 0 20px 0;">
+      Open this job in the pool forms app so it can be edited and re-sent.
+    </p>
+    `
+        : ""
+    }
 
     <h2 style="font-size: 18px; margin: 0 0 12px 0; color: #333;">
       Form Details

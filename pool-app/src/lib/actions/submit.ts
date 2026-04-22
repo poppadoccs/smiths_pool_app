@@ -171,7 +171,15 @@ export async function submitJob(
     );
   }
 
-  // 8. Build and send email with PDF attached
+  // 8. Build and send email with PDF attached.
+  // Base URL for the "Open editable version" link. Falls back to the
+  // local override so a forgotten env var doesn't break local proofs.
+  const appBaseUrl =
+    process.env.NEXT_PUBLIC_APP_URL ??
+    process.env.APP_URL ??
+    "http://localhost:3000";
+  const editUrl = `${appBaseUrl.replace(/\/+$/, "")}/jobs/${jobId}`;
+
   const html = buildSubmissionEmail({
     jobTitle,
     jobNumber: job.jobNumber,
@@ -179,6 +187,7 @@ export async function submitJob(
     formData,
     template,
     photos,
+    editUrl,
   });
 
   const { error: emailError } = await getResend().emails.send({
