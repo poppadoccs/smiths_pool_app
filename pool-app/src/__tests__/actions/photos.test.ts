@@ -80,6 +80,11 @@ describe("savePhotoMetadata", () => {
 
 describe("deletePhoto", () => {
   it("deletes blob and removes photo from array via raw SQL UPDATE", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValueOnce({
+      status: "DRAFT",
+      formData: {},
+    } as never);
+
     await deletePhoto("job-1", "https://blob.vercel-storage.com/delete.jpg");
 
     expect(del).toHaveBeenCalledWith(
@@ -93,11 +98,42 @@ describe("deletePhoto", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/jobs/job-1");
   });
 
-  it("throws when job not found (zero rows affected)", async () => {
-    vi.mocked(db.$executeRaw).mockResolvedValueOnce(0);
+  it("throws when job not found (findUnique returns null)", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValueOnce(null);
 
     await expect(
       deletePhoto("no-job", "https://blob.vercel-storage.com/x.jpg"),
     ).rejects.toThrow("Job not found");
+    expect(del).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it("refuses delete when job is SUBMITTED (server-side guard mirrors UI)", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValueOnce({
+      status: "SUBMITTED",
+      formData: {},
+    } as never);
+
+    await expect(
+      deletePhoto("submitted-1", "https://blob.vercel-storage.com/x.jpg"),
+    ).rejects.toThrow("Cannot delete photos from a submitted job");
+    // Critical: neither destructive op runs before the guard rejects.
+    expect(del).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it("refuses delete when job is an editable copy (carries __sourceJobId)", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValueOnce({
+      status: "DRAFT",
+      formData: { __sourceJobId: "src-original" },
+    } as never);
+
+    await expect(
+      deletePhoto("copy-1", "https://blob.vercel-storage.com/shared.jpg"),
+    ).rejects.toThrow("Cannot delete photos from an editable copy");
+    // Critical: del() must NOT run on a shared blob — that would also
+    // break the source job's reference to the same URL.
+    expect(del).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 });
