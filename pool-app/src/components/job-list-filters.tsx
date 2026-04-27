@@ -26,6 +26,15 @@ export function JobListFilters({ jobs }: { jobs: Job[] }) {
   const [status, setStatus] = useState<StatusFilter>("ALL");
   const isFiltering = q.trim() !== "" || status !== "ALL";
 
+  // Counts come from the unfiltered `jobs` prop so badges show how many
+  // exist in each bucket, not how many are currently visible. Page already
+  // filters out ARCHIVED server-side, so DRAFT + SUBMITTED === ALL holds.
+  const counts: Record<StatusFilter, number> = {
+    ALL: jobs.length,
+    DRAFT: jobs.filter((j) => j.status === "DRAFT").length,
+    SUBMITTED: jobs.filter((j) => j.status === "SUBMITTED").length,
+  };
+
   const needle = q.trim().toLowerCase();
   const filtered = !isFiltering
     ? jobs
@@ -55,7 +64,7 @@ export function JobListFilters({ jobs }: { jobs: Job[] }) {
             onClick={() => setStatus(opt.value)}
             className="min-h-[48px] flex-1 text-base"
           >
-            {opt.label}
+            {opt.label} ({counts[opt.value]})
           </Button>
         ))}
       </div>
