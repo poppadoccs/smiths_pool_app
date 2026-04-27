@@ -37,9 +37,10 @@ function hasLegacyPhotoMirror(fieldId: string): boolean {
 //
 //   Pass 1 — map-backed owners. For every OTHER field with an entry in
 //   __photoAssignmentsByField, filter out any URL in the incoming set.
-//   When the loser carries a legacy mirror (multi-photo + remarks per
-//   hasLegacyPhotoMirror), also update formData[fid] to the remaining
-//   urls[0] so map and mirror stay consistent. Q108 is map-only.
+//   When the loser carries a legacy mirror (multi-photo only, per
+//   hasLegacyPhotoMirror — remarks owners and Q108 are map-only),
+//   also update formData[fid] to the remaining urls[0] so map and
+//   mirror stay consistent.
 //
 //   Pass 2 — legacy mirror-only owners. A URL can also be owned purely
 //   via formData[fid] with NO map entry yet — either pre-migration data,
