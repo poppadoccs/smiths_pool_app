@@ -1,0 +1,18 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - heading "Settings" [level=1] [ref=e3]
+    - paragraph [ref=e4]: Manage submissions and app settings.
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - img [ref=e8]
+        - generic [ref=e11]: Enter admin PIN
+      - generic [ref=e12]:
+        - generic [ref=e13]: PIN
+        - textbox "PIN" [ref=e14]:
+          - /placeholder: Enter PIN
+      - button "Unlock Settings" [disabled]
+      - link "Back to Jobs" [ref=e15] [cursor=pointer]:
+        - /url: /
+        - button "Back to Jobs" [ref=e16]
+  - region "Notifications alt+T"
+  - alert [ref=e17]

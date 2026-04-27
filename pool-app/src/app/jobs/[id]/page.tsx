@@ -14,6 +14,8 @@ import { PhotoAssignmentsEditor } from "@/components/photo-assignments";
 import type { PhotoMetadata } from "@/lib/photos";
 import { JobForm } from "@/components/job-form";
 import { SubmitSection } from "@/components/submit-section";
+import { EditableCopyButton } from "@/components/editable-copy-button";
+import { isEditableCopy } from "@/lib/multi-photo";
 import {
   DEFAULT_TEMPLATE,
   type FormData,
@@ -50,6 +52,16 @@ export default async function JobDetailPage({ params }: Props) {
   }
 
   const isSubmitted = job.status === "SUBMITTED" || job.status === "ARCHIVED";
+
+  // Editable-copy awareness. A copy's photo blobs are SHARED with the
+  // SUBMITTED source it was spawned from. deletePhoto calls del() on the
+  // underlying blob URL, so allowing delete on the copy would corrupt the
+  // source's photo references. This guard is UI-level only for this
+  // slice — a future resend/blob-ownership slice replaces it with true
+  // per-job blob ownership. Non-destructive editing (assignments, form
+  // fields, new uploads) stays enabled.
+  const isCopy = isEditableCopy(job.formData as Record<string, unknown> | null);
+  const photosReadOnly = isSubmitted || isCopy;
 
   // Use the linked template from DB, or fall back to DEFAULT_TEMPLATE
   const template: FormTemplate = job.template
@@ -98,10 +110,18 @@ export default async function JobDetailPage({ params }: Props) {
         <Card>
           <CardContent className="space-y-4 p-4">
             <h2 className="text-lg font-semibold text-zinc-900">Photos</h2>
+            {isCopy && !isSubmitted && (
+              <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                Photo delete is disabled on editable copies. These photos are
+                shared with the original submitted job — deleting one here would
+                remove it there too. You can still upload new photos and change
+                photo assignments.
+              </p>
+            )}
             <PhotoGallery
               photos={job.photos as PhotoMetadata[]}
               jobId={job.id}
-              readOnly={isSubmitted}
+              readOnly={photosReadOnly}
             />
             {!isSubmitted && (
               <>
@@ -130,6 +150,7 @@ export default async function JobDetailPage({ params }: Props) {
               jobId={job.id}
               template={template}
               initialData={(job.formData as FormData) ?? null}
+              jobPhotos={job.photos as PhotoMetadata[]}
               disabled={isSubmitted}
             />
           </CardContent>
@@ -139,6 +160,25 @@ export default async function JobDetailPage({ params }: Props) {
           <Card>
             <CardContent className="p-4">
               <SubmitSection jobId={job.id} />
+            </CardContent>
+          </Card>
+        )}
+
+        {job.status === "SUBMITTED" && (
+          <Card>
+            <CardContent className="space-y-3 p-4">
+              <div className="space-y-1">
+                <h2 className="text-lg font-semibold text-zinc-900">
+                  Resend or edit
+                </h2>
+                <p className="text-sm text-zinc-600">
+                  Need to resend this submission or fix something? Create a
+                  draft copy — the original stays submitted and unchanged.
+                  Submitting the copy re-sends the email with an updated PDF and
+                  editable link.
+                </p>
+              </div>
+              <EditableCopyButton jobId={job.id} />
             </CardContent>
           </Card>
         )}

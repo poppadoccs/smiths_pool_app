@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import Link from "next/link";
-import { JobList } from "@/components/job-list";
+import { JobListFilters } from "@/components/job-list-filters";
 import { CreateJobForm } from "@/components/create-job-form";
 import { Separator } from "@/components/ui/separator";
 import { Settings, FileText } from "lucide-react";
@@ -31,7 +31,7 @@ export default async function HomePage() {
       </p>
       <CreateJobForm templates={templates} />
       <Separator className="my-6" />
-      <JobList jobs={jobs} />
+      <JobListFilters jobs={jobs} />
       <Separator className="my-6" />
       <div className="flex items-center justify-center gap-6">
         <Link

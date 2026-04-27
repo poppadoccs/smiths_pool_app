@@ -36,7 +36,14 @@ export async function submitJob(
   jobId: string,
   submittedBy: string,
   workerSignature?: string,
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{
+  success: boolean;
+  error?: string;
+  // Present only on the success return so the UI can distinguish a clean
+  // happy-path submission from a "job saved but office email didn't send"
+  // state. Error returns do not set this field.
+  emailSent?: boolean;
+}> {
   // 0. Validate signature format + size
   if (workerSignature) {
     const sigError = validateSignature(workerSignature);
@@ -171,7 +178,18 @@ export async function submitJob(
     );
   }
 
-  // 8. Build and send email with PDF attached
+  // 8. Build and send email with PDF attached.
+  // Base URL for the "Open editable version" link. We deliberately do
+  // NOT fall back to a localhost default in production — a forgotten
+  // env var would otherwise ship a working-looking button that opens
+  // nothing in the office's browser. Skip the link instead;
+  // buildSubmissionEmail omits the whole CTA block when editUrl is
+  // undefined.
+  const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.APP_URL;
+  const editUrl = appBaseUrl
+    ? `${appBaseUrl.replace(/\/+$/, "")}/jobs/${jobId}`
+    : undefined;
+
   const html = buildSubmissionEmail({
     jobTitle,
     jobNumber: job.jobNumber,
@@ -179,26 +197,39 @@ export async function submitJob(
     formData,
     template,
     photos,
+    editUrl,
   });
 
-  const { error: emailError } = await getResend().emails.send({
-    from: "Pool Field Forms <forms@mail.lucacllc.com>",
-    to: [submissionEmail],
-    subject: `Job Submission: ${jobTitle}`,
-    html,
-    ...(pdfAttachment ? { attachments: [pdfAttachment] } : {}),
-  });
-
-  if (emailError) {
-    // Job is already saved — don't block the worker. Email failure is an ops issue.
+  // Two failure modes the worker must see as "saved-but-unsent":
+  //  1) Resend returns { error } — relay/SMTP issue surfaced via the SDK
+  //  2) Resend throws / rejects — network or SDK-internal failure
+  // Both resolve to emailSent: false. Raw error details stay in stderr only.
+  let emailSent = true;
+  try {
+    const { error: emailError } = await getResend().emails.send({
+      from: "Pool Field Forms <forms@mail.lucacllc.com>",
+      to: [submissionEmail],
+      subject: `Job Submission: ${jobTitle}`,
+      html,
+      ...(pdfAttachment ? { attachments: [pdfAttachment] } : {}),
+    });
+    if (emailError) {
+      console.error(
+        `[submit] Email failed after job ${jobId} committed:`,
+        emailError.message,
+      );
+      emailSent = false;
+    }
+  } catch (err) {
     console.error(
-      `[submit] Email failed after job ${jobId} committed:`,
-      emailError.message,
+      `[submit] Email send threw after job ${jobId} committed:`,
+      err,
     );
+    emailSent = false;
   }
 
   revalidatePath(`/jobs/${jobId}`);
   revalidatePath("/");
 
-  return { success: true };
+  return { success: true, emailSent };
 }
