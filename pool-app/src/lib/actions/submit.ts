@@ -179,13 +179,16 @@ export async function submitJob(
   }
 
   // 8. Build and send email with PDF attached.
-  // Base URL for the "Open editable version" link. Falls back to the
-  // local override so a forgotten env var doesn't break local proofs.
-  const appBaseUrl =
-    process.env.NEXT_PUBLIC_APP_URL ??
-    process.env.APP_URL ??
-    "http://localhost:3000";
-  const editUrl = `${appBaseUrl.replace(/\/+$/, "")}/jobs/${jobId}`;
+  // Base URL for the "Open editable version" link. We deliberately do
+  // NOT fall back to a localhost default in production — a forgotten
+  // env var would otherwise ship a working-looking button that opens
+  // nothing in the office's browser. Skip the link instead;
+  // buildSubmissionEmail omits the whole CTA block when editUrl is
+  // undefined.
+  const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.APP_URL;
+  const editUrl = appBaseUrl
+    ? `${appBaseUrl.replace(/\/+$/, "")}/jobs/${jobId}`
+    : undefined;
 
   const html = buildSubmissionEmail({
     jobTitle,
