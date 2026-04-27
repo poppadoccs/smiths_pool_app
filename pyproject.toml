@@ -1,9 +1,0 @@
-
-[project]
-name = "lucac-vault-server"
-version = "1.0.0"
-description = "Lucac LLC private vault MCP server"
-requires-python = ">=3.10"
-dependencies = [
-    "mcp[cli]>=1.0.0",
-]
