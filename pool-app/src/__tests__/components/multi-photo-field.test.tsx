@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act } from "react";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
@@ -310,6 +311,159 @@ describe("MultiPhotoField", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Add from gallery/i }));
     expect(screen.getByText(/No photos uploaded yet/i)).toBeTruthy();
+  });
+
+  // ── Race-guard tests (v1.1) ──────────────────────────────────────────────
+  // These tests fire two handler invocations within the SAME render closure
+  // (no React commit between them). The previous v1 fix only checked the
+  // render-state `isPending`/`isUploading` flags — both handler invocations
+  // read the same stale `false` value and the second one queued a stale
+  // write that clobbered the first. v1.1 swaps the guard to a synchronous
+  // ref that mutates between the two synchronous click dispatches.
+
+  it("rapid double add fires only ONE assignment — second click is locked out (regression: v1 isPending guard could not block a same-tick re-entry)", async () => {
+    // Hang the action so the lock stays held while the second click fires.
+    let resolveFirst!: (val: { success: true }) => void;
+    vi.mocked(assignMultiFieldPhotos).mockImplementation(
+      () =>
+        new Promise<{ success: true }>((res) => {
+          resolveFirst = res;
+        }),
+    );
+
+    render(
+      <MultiPhotoField
+        jobId="job-1"
+        field={photoField(Q5_ID, "Q5")}
+        jobPhotos={[photo("http://test/a"), photo("http://test/b")]}
+        formData={null}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Add from gallery/i }));
+
+    const c1 = screen.getByRole("button", {
+      name: /Attach a to Q5/i,
+    }) as HTMLButtonElement;
+    const c2 = screen.getByRole("button", {
+      name: /Attach b to Q5/i,
+    }) as HTMLButtonElement;
+
+    // Direct .click() (not fireEvent) so testing-library does NOT flush
+    // React updates between the two clicks. Both handlers run against the
+    // same render closure — exactly the iPad rapid-double-tap shape.
+    // Wrapped in a single act() so React queues both updates and flushes
+    // once after, suppressing the "not wrapped in act" warning while
+    // preserving the same-tick race shape.
+    act(() => {
+      c1.click();
+      c2.click();
+    });
+
+    expect(assignMultiFieldPhotos).toHaveBeenCalledTimes(1);
+    const [, fieldId, urls] = vi.mocked(assignMultiFieldPhotos).mock.calls[0];
+    expect(fieldId).toBe(Q5_ID);
+    // The first add wins; the second's stale `[a]` snapshot extension `[b]`
+    // never reaches the server.
+    expect(urls).toEqual(["http://test/a"]);
+
+    // Resolve to drain the transition.
+    resolveFirst({ success: true });
+    await waitFor(() => {});
+  });
+
+  it("rapid remove-then-add: second action is locked out while remove is in flight (no clobber)", async () => {
+    let resolveFirst!: (val: { success: true }) => void;
+    vi.mocked(assignMultiFieldPhotos).mockImplementation(
+      () =>
+        new Promise<{ success: true }>((res) => {
+          resolveFirst = res;
+        }),
+    );
+
+    render(
+      <MultiPhotoField
+        jobId="job-1"
+        field={photoField(Q5_ID, "Q5")}
+        jobPhotos={[photo("http://test/keep"), photo("http://test/extra")]}
+        formData={{
+          [RESERVED_PHOTO_MAP_KEY]: { [Q5_ID]: ["http://test/keep"] },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Add from gallery/i }));
+
+    const removeBtn = screen.getByRole("button", {
+      name: /Remove keep from Q5/i,
+    }) as HTMLButtonElement;
+    const addBtn = screen.getByRole("button", {
+      name: /Attach extra to Q5/i,
+    }) as HTMLButtonElement;
+
+    act(() => {
+      removeBtn.click();
+      addBtn.click();
+    });
+
+    // Only the remove fires; the add is dropped (lock held). Without the
+    // lock, the add would compute against the stale `currentUrls=[keep]`
+    // and send `[keep, extra]` — clobbering the just-issued remove.
+    expect(assignMultiFieldPhotos).toHaveBeenCalledTimes(1);
+    const [, , urls] = vi.mocked(assignMultiFieldPhotos).mock.calls[0];
+    expect(urls).toEqual([]); // remove of "keep" → empty list
+
+    resolveFirst({ success: true });
+    await waitFor(() => {});
+  });
+
+  it("at-cap path does NOT claim the lock (later attempts can still proceed once cap is freed)", async () => {
+    // Pre-populate at cap so addPhoto bails on `if (atCap) return;`. The
+    // lock must NOT be held after the bail — otherwise removing one photo
+    // (which would free the cap) and then adding would be silently locked.
+    const fiveUrls = Array.from({ length: 5 }, (_, i) => `http://test/p${i}`);
+    render(
+      <MultiPhotoField
+        jobId="job-1"
+        field={photoField(Q5_ID, "Q5")}
+        jobPhotos={[...fiveUrls.map(photo), photo("http://test/sixth")]}
+        formData={{ [RESERVED_PHOTO_MAP_KEY]: { [Q5_ID]: fiveUrls } }}
+      />,
+    );
+
+    // The candidate is `disabled` because `atCap`, but bypass that for the
+    // structural assertion: simulate a path where addPhoto runs at cap.
+    fireEvent.click(screen.getByRole("button", { name: /Add from gallery/i }));
+    const sixth = screen.getByRole("button", {
+      name: /Attach sixth to Q5/i,
+    }) as HTMLButtonElement;
+    sixth.removeAttribute("disabled");
+    // .click() inside act() — addPhoto runs, hits atCap, bails. No state
+    // updates actually scheduled (it's a pure return), but wrap defensively
+    // to be consistent with the other race tests.
+    act(() => {
+      sixth.click();
+    });
+
+    // Now do a real remove (one we DO want to fire). If the lock had been
+    // erroneously claimed by the bailed add, this remove would be locked.
+    // Use fireEvent here (not raw .click()) since we WANT testing-library
+    // to flush the resulting transition update before our waitFor assertion.
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Remove p0 from Q5/i,
+      }),
+    );
+
+    await waitFor(() =>
+      expect(assignMultiFieldPhotos).toHaveBeenCalledTimes(1),
+    );
+    const [, , urls] = vi.mocked(assignMultiFieldPhotos).mock.calls[0];
+    expect(urls).toEqual([
+      "http://test/p1",
+      "http://test/p2",
+      "http://test/p3",
+      "http://test/p4",
+    ]);
   });
 
   it("reopen/read path: assigned photos persist via __photoAssignmentsByField even with no legacy mirror", () => {

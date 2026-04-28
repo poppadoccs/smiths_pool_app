@@ -52,6 +52,12 @@ export function MultiPhotoField({
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  // Synchronous in-flight lock. `isPending`/`isUploading` are render-closure
+  // state — a second handler firing in the same tick reads the SAME stale
+  // `false` value the first one saw and the React-state guard does not block
+  // it. A ref mutates synchronously, so the second handler sees `true` the
+  // moment the first one claims it. Released in the transition's `finally`.
+  const lockRef = useRef(false);
 
   const fieldId = field.id;
   const isQ108 = fieldId === ADDITIONAL_PHOTOS_FIELD_ID;
@@ -66,26 +72,43 @@ export function MultiPhotoField({
   const currentUrlSet = new Set(currentUrls);
   const atCap = currentUrls.length >= cap;
 
+  // Lock contract:
+  //   - Entry handlers (addPhoto, removePhoto, handleCapture) check the lock,
+  //     run their bail-fast checks, then claim the lock synchronously before
+  //     any await or state-scheduling call.
+  //   - writeUrls is the single transition starter and the single lock release
+  //     point for the gallery/remove paths (released in finally).
+  //   - handleCapture also releases on the upload-failure path before throwing
+  //     control out; on the success path it hands off to writeUrls which
+  //     releases when the assignment transition resolves.
   function writeUrls(newUrls: string[]) {
     startTransition(async () => {
-      const res = isQ108
-        ? await assignAdditionalPhotos(jobId, newUrls)
-        : await assignMultiFieldPhotos(jobId, fieldId, newUrls);
-      if (!res.success) {
-        toast.error(res.error ?? "Failed to update photos");
-        return;
+      try {
+        const res = isQ108
+          ? await assignAdditionalPhotos(jobId, newUrls)
+          : await assignMultiFieldPhotos(jobId, fieldId, newUrls);
+        if (!res.success) {
+          toast.error(res.error ?? "Failed to update photos");
+          return;
+        }
+        router.refresh();
+      } finally {
+        lockRef.current = false;
       }
-      router.refresh();
     });
   }
 
   function removePhoto(url: string) {
+    if (lockRef.current) return;
+    lockRef.current = true;
     writeUrls(currentUrls.filter((u) => u !== url));
   }
 
   function addPhoto(url: string) {
+    if (lockRef.current) return;
     if (currentUrlSet.has(url)) return;
     if (atCap) return;
+    lockRef.current = true;
     writeUrls([...currentUrls, url]);
   }
 
@@ -94,10 +117,14 @@ export function MultiPhotoField({
     // Reset immediately so the same file can be reselected after a failure.
     e.target.value = "";
     if (!file) return;
+    // Synchronous lock check before any await — a queued second capture
+    // event from the same render must not start a parallel upload+assign.
+    if (lockRef.current) return;
     if (atCap) {
       toast.error(`At cap for ${field.label} (${cap})`);
       return;
     }
+    lockRef.current = true;
     setIsUploading(true);
     try {
       // Mirror the compression + HEIC path from photo-upload.tsx. Kept
@@ -144,6 +171,10 @@ export function MultiPhotoField({
           err instanceof Error ? err.message : "Unknown error"
         }`,
       );
+      // Release on the failure path — success path hands the lock off to
+      // writeUrls' transition `finally`. Without this, an upload error
+      // would leave the lock held until the page reloads.
+      lockRef.current = false;
     } finally {
       setIsUploading(false);
     }

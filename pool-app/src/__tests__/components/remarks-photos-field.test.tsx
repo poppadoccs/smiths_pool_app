@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act } from "react";
 
 // --- Mocks for client-side dependencies ---
 vi.mock("next/navigation", () => ({
@@ -255,6 +256,55 @@ describe("RemarksPhotosField", () => {
     // Give any transitional update a chance.
     await waitFor(() => {});
     expect(assignRemarksFieldPhotos).not.toHaveBeenCalled();
+  });
+
+  // ── Race-guard test (v1.1) ────────────────────────────────────────────────
+  // See multi-photo-field.test.tsx for the rationale. Fires two synchronous
+  // .click() calls inside the same render closure. The previous v1 fix that
+  // checked render-state `isPending` could not block this because both
+  // handler invocations read the same stale `false`. v1.1 uses a synchronous
+  // ref so the second handler sees `true` instantly.
+  it("rapid double add fires only ONE assignRemarksFieldPhotos — second click is locked out", async () => {
+    let resolveFirst!: (val: { success: true }) => void;
+    vi.mocked(assignRemarksFieldPhotos).mockImplementation(
+      () =>
+        new Promise<{ success: true }>((res) => {
+          resolveFirst = res;
+        }),
+    );
+
+    render(
+      <RemarksPhotosField
+        jobId="job-1"
+        textareaFieldId={REMARKS_15}
+        jobPhotos={[photoMeta("http://test/x"), photoMeta("http://test/y")]}
+        formData={null}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    const cX = screen.getByRole("button", {
+      name: "Attach x to this remarks section",
+    }) as HTMLButtonElement;
+    const cY = screen.getByRole("button", {
+      name: "Attach y to this remarks section",
+    }) as HTMLButtonElement;
+
+    // Wrapped in a single act() — both clicks fire before React flushes,
+    // preserving the same-tick race shape while suppressing the React
+    // "not wrapped in act" warning.
+    act(() => {
+      cX.click();
+      cY.click();
+    });
+
+    expect(assignRemarksFieldPhotos).toHaveBeenCalledTimes(1);
+    const [, ownerId, urls] = vi.mocked(assignRemarksFieldPhotos).mock.calls[0];
+    expect(ownerId).toBe(REMARKS_15_PHOTOS);
+    expect(urls).toEqual(["http://test/x"]);
+
+    resolveFirst({ success: true });
+    await waitFor(() => {});
   });
 
   it("disabled prop hides the Add button AND remove buttons (read-only view)", () => {

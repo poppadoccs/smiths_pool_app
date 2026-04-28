@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,12 @@ export function RemarksPhotosField({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [isPickerOpen, setIsPickerOpen] = useState(false);
+  // Synchronous in-flight lock — see multi-photo-field.tsx for why a ref is
+  // required here instead of `isPending`. Two click handlers from the same
+  // render share the same `isPending` closure value and both pass a
+  // React-state guard. The ref mutates synchronously so the second handler
+  // sees the lock the first one just claimed.
+  const lockRef = useRef(false);
 
   // Defensive: only remarks textarea ids should render this component.
   // If a non-remarks id somehow reaches here, skip entirely so no random
@@ -48,22 +54,30 @@ export function RemarksPhotosField({
 
   function writeUrls(newUrls: string[]) {
     startTransition(async () => {
-      const res = await assignRemarksFieldPhotos(jobId, ownerId!, newUrls);
-      if (!res.success) {
-        toast.error(res.error ?? "Failed to update remarks photos");
-        return;
+      try {
+        const res = await assignRemarksFieldPhotos(jobId, ownerId!, newUrls);
+        if (!res.success) {
+          toast.error(res.error ?? "Failed to update remarks photos");
+          return;
+        }
+        router.refresh();
+      } finally {
+        lockRef.current = false;
       }
-      router.refresh();
     });
   }
 
   function removePhoto(url: string) {
+    if (lockRef.current) return;
+    lockRef.current = true;
     writeUrls(currentUrls.filter((u) => u !== url));
   }
 
   function addPhoto(url: string) {
+    if (lockRef.current) return;
     if (currentUrlSet.has(url)) return;
     if (atCap) return;
+    lockRef.current = true;
     writeUrls([...currentUrls, url]);
   }
 

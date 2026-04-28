@@ -47,7 +47,10 @@ export function SubmitSection({ jobId }: { jobId: string }) {
       setSubmitted(true);
       setShowConfirm(false);
       if (result.emailSent === false) {
-        toast.warning("Job saved, but the email didn't send.");
+        toast.warning(
+          'Job saved — email didn\'t send. Tap "Resend or edit" below to try again, and let the office know directly.',
+          { duration: Infinity },
+        );
       } else {
         toast.success("Job submitted for review!");
       }
@@ -77,11 +80,12 @@ export function SubmitSection({ jobId }: { jobId: string }) {
       <div className="flex flex-col items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 p-6 text-center">
         <AlertTriangle className="size-10 text-amber-600" />
         <h3 className="text-lg font-semibold text-amber-800">
-          Submitted — email didn&apos;t send
+          Job saved — email didn&apos;t send
         </h3>
         <p className="text-base text-amber-700">
-          The job is saved, but the office email didn&apos;t go through. Please
-          let them know directly, or resend from the submitted job view.
+          The job is saved on our server. The office didn&apos;t get the email.
+          Tap <strong>Resend or edit</strong> below to try again, and let the
+          office know directly so they&apos;re aware.
         </p>
       </div>
     );
