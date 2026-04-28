@@ -128,7 +128,12 @@ export async function submitJob(
     };
   }
 
-  // 6. Atomic DB write — updateMany with status guard prevents concurrent double-submits
+  // 6. Atomic DB write — updateMany with status guard prevents concurrent double-submits.
+  // Pessimistic durable flag: lastEmailFailed defaults to true on the SUBMITTED
+  // transition and is cleared to false only after a confirmed Resend success
+  // (step 8 below). If anything in the post-send path fails — Resend error,
+  // network throw, or even the clear-write itself — the flag stays true so
+  // the submitted-job page warns durably instead of falsely claiming success.
   const updated = await db.job.updateMany({
     where: { id: jobId, status: { not: "SUBMITTED" } },
     data: {
@@ -136,6 +141,7 @@ export async function submitJob(
       submittedBy,
       submittedAt: new Date(),
       workerSignature: workerSignature || null,
+      lastEmailFailed: true,
     },
   });
   if (updated.count === 0) {
@@ -226,6 +232,28 @@ export async function submitJob(
       err,
     );
     emailSent = false;
+  }
+
+  // Clear the pessimistic flag only on a confirmed Resend success. If this
+  // write itself fails (DB hiccup), fall back to over-warn: leave the flag
+  // true and downgrade emailSent so the toast and durable card stay
+  // consistently conservative. Slight cost: the worker may be told to retry
+  // when the email actually went through. Acceptable trade — the failure
+  // mode the spec forbids is falsely claiming success when the office never
+  // received the email.
+  if (emailSent) {
+    try {
+      await db.job.update({
+        where: { id: jobId },
+        data: { lastEmailFailed: false },
+      });
+    } catch (err) {
+      console.error(
+        `[submit] Failed to clear lastEmailFailed for job ${jobId} after successful send; over-warning:`,
+        err,
+      );
+      emailSent = false;
+    }
   }
 
   revalidatePath(`/jobs/${jobId}`);

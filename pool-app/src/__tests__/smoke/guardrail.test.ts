@@ -286,9 +286,13 @@ describe("smoke: resend flow (mocked)", () => {
     const submitRes = await submitJob(COPY_ID, "tester");
     expect(submitRes.success).toBe(true);
 
-    // Assert: no write to the source. update (singular) must never fire;
-    // updateMany must only fire with the copy's id in its where clause.
-    expect(db.job.update).not.toHaveBeenCalled();
+    // Assert: no write to the source. update (singular) and updateMany may
+    // fire (Submit Recovery v2 clears lastEmailFailed via update on a
+    // successful send) but must never target the source row.
+    for (const call of vi.mocked(db.job.update).mock.calls) {
+      const where = (call[0] as { where: { id: string } }).where;
+      expect(where.id).not.toBe(SOURCE_ID);
+    }
     for (const call of vi.mocked(db.job.updateMany).mock.calls) {
       const where = (call[0] as { where: { id: string } }).where;
       expect(where.id).not.toBe(SOURCE_ID);

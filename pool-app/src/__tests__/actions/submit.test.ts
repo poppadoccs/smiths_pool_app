@@ -143,4 +143,92 @@ describe("submitJob", () => {
       }),
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Submit Recovery v2: durable lastEmailFailed flag.
+  // The flag is set true inside the same atomic write that flips status →
+  // SUBMITTED, then cleared to false only after a confirmed Resend success.
+  // -------------------------------------------------------------------------
+
+  it("sets lastEmailFailed=true on the SUBMITTED transition (pessimistic)", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue(mockJob() as never);
+
+    await submitJob("job-1", "Mike");
+
+    expect(db.job.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "SUBMITTED",
+          lastEmailFailed: true,
+        }),
+      }),
+    );
+  });
+
+  it("clears lastEmailFailed to false after a successful Resend send", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue(mockJob() as never);
+
+    const result = await submitJob("job-1", "Mike");
+
+    expect(result.success).toBe(true);
+    expect(result.emailSent).toBe(true);
+    expect(db.job.update).toHaveBeenCalledWith({
+      where: { id: "job-1" },
+      data: { lastEmailFailed: false },
+    });
+  });
+
+  it("does not clear lastEmailFailed when Resend returns an error", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue(mockJob() as never);
+    mockSend.mockResolvedValueOnce({
+      data: null,
+      error: { message: "smtp blew up", name: "send_failed" },
+    });
+
+    const result = await submitJob("job-1", "Mike");
+
+    expect(result.success).toBe(true);
+    expect(result.emailSent).toBe(false);
+    // Pessimistic flag stays true — no clear-write should fire.
+    const clearCall = vi
+      .mocked(db.job.update)
+      .mock.calls.find(
+        (c) =>
+          (c[0] as { data?: { lastEmailFailed?: unknown } })?.data
+            ?.lastEmailFailed === false,
+      );
+    expect(clearCall).toBeUndefined();
+  });
+
+  it("does not clear lastEmailFailed when Resend throws", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue(mockJob() as never);
+    mockSend.mockRejectedValueOnce(new Error("network down"));
+
+    const result = await submitJob("job-1", "Mike");
+
+    expect(result.success).toBe(true);
+    expect(result.emailSent).toBe(false);
+    const clearCall = vi
+      .mocked(db.job.update)
+      .mock.calls.find(
+        (c) =>
+          (c[0] as { data?: { lastEmailFailed?: unknown } })?.data
+            ?.lastEmailFailed === false,
+      );
+    expect(clearCall).toBeUndefined();
+  });
+
+  it("over-warns (emailSent=false) when the clear-write itself fails", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue(mockJob() as never);
+    // Resend succeeds, but the post-send DB clear throws (e.g. transient hiccup).
+    vi.mocked(db.job.update).mockRejectedValueOnce(new Error("db hiccup"));
+
+    const result = await submitJob("job-1", "Mike");
+
+    // Email actually went, but the durable flag couldn't be cleared, so the
+    // server reports emailSent=false to keep the toast and durable card
+    // consistently conservative.
+    expect(result.success).toBe(true);
+    expect(result.emailSent).toBe(false);
+  });
 });

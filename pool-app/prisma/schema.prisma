@@ -46,6 +46,13 @@ model Job {
   submittedBy      String?   @map("submitted_by")
   submittedAt      DateTime? @map("submitted_at") @db.Timestamptz(6)
   workerSignature  String?   @map("worker_signature")
+  // Pessimistic durable flag for "job marked SUBMITTED but office email
+  // didn't go through." Set true inside the same atomic write that flips
+  // status → SUBMITTED, then cleared to false only after a confirmed
+  // Resend success. If anything in the post-send path fails, the flag
+  // stays true so the UI over-warns rather than falsely claiming success.
+  // null = legacy rows / no attempt yet.
+  lastEmailFailed  Boolean?  @map("last_email_failed")
 
   photos   Json  @default("[]")
   formData Json? @map("form_data")

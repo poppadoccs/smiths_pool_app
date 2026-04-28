@@ -524,3 +524,263 @@ describe("generateJobPdf — multi-photo map render path", () => {
     expect(jpegImageCount()).toBe(1);
   });
 });
+
+describe("generateJobPdf — remarks-photo recovery for missing-template", () => {
+  it("renders remarks-photo owner photos when the corresponding textarea is missing from the template", async () => {
+    // Owner bucket exists for 15_remarks_notes_photos, but the template
+    // declares no `15_remarks_notes` textarea. Without recovery, Pass 2.5
+    // consumes the URLs from the leftover queue (so Q108 doesn't drain
+    // them) and the inline render at the textarea branch never fires —
+    // the photos disappear silently. Recovery must render them under a
+    // synthesized heading.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      photos: [
+        photoMeta("http://test.local/orphan-15-a"),
+        photoMeta("http://test.local/orphan-15-b"),
+      ],
+      formData: {
+        __photoAssignmentsByField: {
+          "15_remarks_notes_photos": [
+            "http://test.local/orphan-15-a",
+            "http://test.local/orphan-15-b",
+          ],
+        },
+        __photoAssignmentsReviewed: true,
+      },
+      template: {
+        id: "t1",
+        name: "Trimmed Template",
+        // No 15_remarks_notes textarea — only Q108 in the template.
+        fields: [photoField("108_additional_photos", 108, "Additional Photos")],
+      },
+    } as never);
+
+    const res = await generateJobPdf("job-1");
+    expect(res.success).toBe(true);
+
+    const urls = fetchedUrls();
+    expect(urls).toContain("http://test.local/orphan-15-a");
+    expect(urls).toContain("http://test.local/orphan-15-b");
+    // Each URL fetched exactly once — recovery does not double up with
+    // any drain or with Pass 2.5's consumption.
+    expect(
+      urls.filter((u) => u === "http://test.local/orphan-15-a"),
+    ).toHaveLength(1);
+    expect(
+      urls.filter((u) => u === "http://test.local/orphan-15-b"),
+    ).toHaveLength(1);
+    expect(jpegImageCount()).toBe(2);
+    // A recovery heading derived from the textarea id's leading number is
+    // drawn so the reader sees these photos belong to a remarks section.
+    expect(textWasDrawn("Remarks — Section 15")).toBe(true);
+  });
+
+  it("renders multiple missing-template remarks owners under separate headings in section order", async () => {
+    // Two orphan owners (15 and 33), template has neither textarea.
+    // Recovery walks REMARKS_FIELD_IDS in declaration order (15, 33, 72, ...)
+    // so headings appear in the same numeric sequence as the printed form.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      photos: [
+        photoMeta("http://test.local/sec33"),
+        photoMeta("http://test.local/sec15"),
+      ],
+      formData: {
+        __photoAssignmentsByField: {
+          "33_remarks_notes_photos": ["http://test.local/sec33"],
+          "15_remarks_notes_photos": ["http://test.local/sec15"],
+        },
+        __photoAssignmentsReviewed: true,
+      },
+      template: {
+        id: "t1",
+        name: "No-Remarks Template",
+        fields: [photoField("108_additional_photos", 108, "Additional Photos")],
+      },
+    } as never);
+
+    const res = await generateJobPdf("job-1");
+    expect(res.success).toBe(true);
+
+    const urls = fetchedUrls();
+    const idx15 = urls.indexOf("http://test.local/sec15");
+    const idx33 = urls.indexOf("http://test.local/sec33");
+    expect(idx15).toBeGreaterThanOrEqual(0);
+    expect(idx33).toBeGreaterThanOrEqual(0);
+    // Section 15 renders before section 33, regardless of map insertion order.
+    expect(idx15).toBeLessThan(idx33);
+    expect(jpegImageCount()).toBe(2);
+    expect(textWasDrawn("Remarks — Section 15")).toBe(true);
+    expect(textWasDrawn("Remarks — Section 33")).toBe(true);
+  });
+
+  it("mixed: textarea present for one section, absent for another — inline + recovery, no duplicates", async () => {
+    // 33's textarea is in the template (renders inline). 15's textarea is
+    // missing (recovers under a synthesized heading). Each photo embedded
+    // exactly once.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      photos: [
+        photoMeta("http://test.local/sec15-orphan"),
+        photoMeta("http://test.local/sec33-inline"),
+      ],
+      formData: {
+        "33_remarks_notes": "note 33 inline",
+        __photoAssignmentsByField: {
+          "15_remarks_notes_photos": ["http://test.local/sec15-orphan"],
+          "33_remarks_notes_photos": ["http://test.local/sec33-inline"],
+        },
+        __photoAssignmentsReviewed: true,
+      },
+      template: {
+        id: "t1",
+        name: "Partial Template",
+        fields: [
+          // 15_remarks_notes deliberately absent.
+          remarksTextareaField("33_remarks_notes", 33, "Section 33 Remarks"),
+          photoField("108_additional_photos", 108, "Additional Photos"),
+        ],
+      },
+    } as never);
+
+    const res = await generateJobPdf("job-1");
+    expect(res.success).toBe(true);
+
+    const urls = fetchedUrls();
+    // No duplicates — each URL fetched and embedded exactly once.
+    expect(
+      urls.filter((u) => u === "http://test.local/sec15-orphan"),
+    ).toHaveLength(1);
+    expect(
+      urls.filter((u) => u === "http://test.local/sec33-inline"),
+    ).toHaveLength(1);
+    expect(jpegImageCount()).toBe(2);
+    // Recovery heading present for 15 but NOT for 33 (33 used its inline
+    // textarea label instead).
+    expect(textWasDrawn("Remarks — Section 15")).toBe(true);
+    expect(textWasDrawn("Section 33 Remarks")).toBe(true);
+    expect(textWasDrawn("Remarks — Section 33")).toBe(false);
+  });
+
+  it("per-photo fetch failure inside recovery surfaces fallback marker without aborting the rest", async () => {
+    // Three orphan photos for section 15, middle one's fetch rejects.
+    // Recovery must continue past the bad URL and embed the other two.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "http://test.local/bad") {
+          throw new Error("Simulated network failure");
+        }
+        return okFetchResponse();
+      }),
+    );
+
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      photos: [
+        photoMeta("http://test.local/good1"),
+        photoMeta("http://test.local/bad"),
+        photoMeta("http://test.local/good2"),
+      ],
+      formData: {
+        __photoAssignmentsByField: {
+          "15_remarks_notes_photos": [
+            "http://test.local/good1",
+            "http://test.local/bad",
+            "http://test.local/good2",
+          ],
+        },
+        __photoAssignmentsReviewed: true,
+      },
+      template: {
+        id: "t1",
+        name: "No-Remarks Template",
+        fields: [photoField("108_additional_photos", 108, "Additional Photos")],
+      },
+    } as never);
+
+    const res = await generateJobPdf("job-1");
+    expect(res).toEqual({ success: true, data: "stub_base64_pdf_data" });
+
+    const urls = fetchedUrls();
+    expect(urls).toEqual([
+      "http://test.local/good1",
+      "http://test.local/bad",
+      "http://test.local/good2",
+    ]);
+    // Two successful embeds (good1 + good2); bad skipped without aborting.
+    expect(jpegImageCount()).toBe(2);
+    expect(textWasDrawn("[photo could not be loaded]")).toBe(true);
+    expect(textWasDrawn("Remarks — Section 15")).toBe(true);
+  });
+
+  it("excluded-photo behavior preserved: photo deleted from job.photos but still in remarks bucket does not embed", async () => {
+    // Orphan reference: bucket carries a URL that is no longer in
+    // job.photos (e.g. post-deletePhoto cleanup gap). Existing inline
+    // path renders the fallback marker via fetch failure; recovery must
+    // match — never silently embed an excluded URL by some new code path.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("blob no longer exists");
+      }),
+    );
+
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      photos: [], // photo was deleted — pool empty
+      formData: {
+        __photoAssignmentsByField: {
+          "15_remarks_notes_photos": ["http://test.local/deleted"],
+        },
+        __photoAssignmentsReviewed: true,
+      },
+      template: {
+        id: "t1",
+        name: "No-Remarks Template",
+        fields: [photoField("108_additional_photos", 108, "Additional Photos")],
+      },
+    } as never);
+
+    const res = await generateJobPdf("job-1");
+    expect(res.success).toBe(true);
+
+    // Zero JPEG embeds — the deleted/excluded URL never reaches addImage.
+    expect(jpegImageCount()).toBe(0);
+    // Visible omission marker is drawn so the operator sees the gap.
+    expect(textWasDrawn("[photo could not be loaded]")).toBe(true);
+  });
+
+  it("template HAS the textarea but bucket is empty: no recovery heading is drawn (no false positives)", async () => {
+    // Regression guard against a recovery loop that fires for owners with
+    // empty buckets. Heading must only appear when there is at least one
+    // URL to render.
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      photos: [],
+      formData: {
+        // Empty bucket; nothing to recover.
+        __photoAssignmentsByField: { "15_remarks_notes_photos": [] },
+        __photoAssignmentsReviewed: true,
+      },
+      template: {
+        id: "t1",
+        name: "No-Remarks Template",
+        fields: [photoField("108_additional_photos", 108, "Additional Photos")],
+      },
+    } as never);
+
+    const res = await generateJobPdf("job-1");
+    expect(res.success).toBe(true);
+
+    expect(jpegImageCount()).toBe(0);
+    expect(textWasDrawn("Remarks — Section 15")).toBe(false);
+  });
+});

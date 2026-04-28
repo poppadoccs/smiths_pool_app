@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { Separator } from "@/components/ui/separator";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, AlertTriangle } from "lucide-react";
 import { LocalTime } from "@/components/local-time";
 import type { Metadata } from "next";
 import { PhotoUpload } from "@/components/photo-upload";
@@ -167,6 +167,20 @@ export default async function JobDetailPage({ params }: Props) {
         {job.status === "SUBMITTED" && (
           <Card>
             <CardContent className="space-y-3 p-4">
+              {job.lastEmailFailed === true && (
+                <div className="flex flex-col items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-center">
+                  <AlertTriangle className="size-8 text-amber-600" />
+                  <h3 className="text-base font-semibold text-amber-800">
+                    Email didn&apos;t send
+                  </h3>
+                  <p className="text-sm text-amber-700">
+                    The job is saved on our server, but the office hasn&apos;t
+                    received the email. Use <strong>Resend or edit</strong>{" "}
+                    below to try again, and let the office know directly so
+                    they&apos;re aware.
+                  </p>
+                </div>
+              )}
               <div className="space-y-1">
                 <h2 className="text-lg font-semibold text-zinc-900">
                   Resend or edit

@@ -507,6 +507,62 @@ export async function generateJobPdf(
     }
   }
 
+  // Recovery — remarks-photo owners whose corresponding textarea field is
+  // not in the current template. Pass 2.5 already consumed their URLs so
+  // nothing duplicates into the Q108 drain, but the inline render at the
+  // textarea branch never fired because the textarea isn't in the
+  // template iteration. Without this loop those photos would be silently
+  // dropped from the PDF (e.g. trimmed custom templates, or a job that
+  // falls back to DEFAULT_TEMPLATE with pre-existing remarks owners).
+  // Iteration follows REMARKS_FIELD_IDS declaration order so sections
+  // print 15 → 33 → 72 → ... like the paper form.
+  const templateFieldIdSet = new Set(template.fields.map((f) => f.id));
+  for (const remarksFieldId of REMARKS_FIELD_IDS) {
+    if (templateFieldIdSet.has(remarksFieldId)) continue;
+    const ownerId = remarksPhotoOwnerIdFor(remarksFieldId);
+    if (!ownerId) continue;
+    const urls = readFieldPhotoUrls(formData, ownerId);
+    if (urls.length === 0) continue;
+
+    // Synthesized heading derived from the textarea id's leading number.
+    const sectionNum = remarksFieldId.split("_")[0];
+    const heading = `Remarks — Section ${sectionNum}`;
+    if (y + 8 > 280) {
+      doc.addPage();
+      y = MARGIN;
+    }
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.text(heading, MARGIN, y);
+    y += 6;
+
+    for (const url of urls) {
+      try {
+        const res = await fetch(url);
+        const buf = await res.arrayBuffer();
+        const b64 = Buffer.from(buf).toString("base64");
+        const imgProps = doc.getImageProperties(b64);
+        const { imgW, imgH } = fitPhoto(imgProps);
+        const imgX = MARGIN + (CONTENT_WIDTH - imgW) / 2;
+        if (y + imgH + 6 > 280) {
+          doc.addPage();
+          y = MARGIN;
+        }
+        doc.addImage(b64, "JPEG", imgX, y, imgW, imgH, undefined, "FAST");
+        y += imgH + 4;
+      } catch {
+        if (y + 5 > 280) {
+          doc.addPage();
+          y = MARGIN;
+        }
+        doc.setFont("helvetica", "italic");
+        doc.setFontSize(8);
+        doc.text("[photo could not be loaded]", MARGIN, y);
+        y += 5;
+      }
+    }
+  }
+
   // Safety drain — renders any remaining photos for jobs whose template
   // does not contain field id "108_additional_photos" (e.g. DEFAULT_TEMPLATE).
   for (const url of photosQueue.splice(0)) {
