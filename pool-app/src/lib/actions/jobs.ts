@@ -104,17 +104,33 @@ export async function createJob(prevState: unknown, formData: FormData) {
   }
 
   const rawTemplateId = formData.get("templateId");
-  const templateId =
+  const explicitTemplateId =
     typeof rawTemplateId === "string" && rawTemplateId.trim()
       ? rawTemplateId.trim()
       : null;
+
+  // When the form did not pass a templateId, bind to the current DB default
+  // template instead of leaving the FK null. A null templateId would let the
+  // PDF generator silently fall back to the hardcoded 13-field
+  // DEFAULT_TEMPLATE shape, which is the deprecated form. If no default
+  // template exists yet, leave templateId null so existing fallback handling
+  // still applies.
+  let resolvedTemplateId = explicitTemplateId;
+  if (!resolvedTemplateId) {
+    const defaultTpl = await db.formTemplate.findFirst({
+      where: { isDefault: true },
+      select: { id: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    resolvedTemplateId = defaultTpl?.id ?? null;
+  }
 
   await db.job.create({
     data: {
       name: parsed.data.name ?? null,
       jobNumber: parsed.data.jobNumber ?? null,
       status: "DRAFT",
-      ...(templateId && { templateId }),
+      ...(resolvedTemplateId && { templateId: resolvedTemplateId }),
     },
   });
 

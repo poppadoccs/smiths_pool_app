@@ -6,6 +6,9 @@ vi.mock("@/lib/db", () => ({
       create: vi.fn().mockResolvedValue({ id: "test-id", status: "DRAFT" }),
       findUnique: vi.fn(),
     },
+    formTemplate: {
+      findFirst: vi.fn().mockResolvedValue({ id: "tpl-default-from-db" }),
+    },
   },
 }));
 
@@ -77,6 +80,75 @@ describe("createJob", () => {
     const result = await createJob(null, formData);
 
     expect(result).toEqual({ success: true });
+  });
+
+  it("preserves explicit templateId when supplied by the form", async () => {
+    const formData = new FormData();
+    formData.set("name", "Smith Residence");
+    formData.set("templateId", "tpl-explicit-pick");
+
+    await createJob(null, formData);
+
+    // Explicit selection wins — the DB default lookup must not be used.
+    expect(db.formTemplate.findFirst).not.toHaveBeenCalled();
+    expect(db.job.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        templateId: "tpl-explicit-pick",
+      }),
+    });
+  });
+
+  it("falls back to the DB default template when no templateId is supplied", async () => {
+    vi.mocked(db.formTemplate.findFirst).mockResolvedValueOnce({
+      id: "tpl-default-from-db",
+    } as never);
+    const formData = new FormData();
+    formData.set("name", "No Template Picked");
+
+    await createJob(null, formData);
+
+    expect(db.formTemplate.findFirst).toHaveBeenCalledWith({
+      where: { isDefault: true },
+      select: { id: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    expect(db.job.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        templateId: "tpl-default-from-db",
+        status: "DRAFT",
+      }),
+    });
+  });
+
+  it("falls back to templateId=null only when no DB default template exists", async () => {
+    vi.mocked(db.formTemplate.findFirst).mockResolvedValueOnce(null);
+    const formData = new FormData();
+    formData.set("name", "Fresh DB With No Default");
+
+    await createJob(null, formData);
+
+    expect(db.formTemplate.findFirst).toHaveBeenCalled();
+    const createArgs = vi.mocked(db.job.create).mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    // No templateId key on the create payload — preserves legacy fallback.
+    expect(createArgs.data).not.toHaveProperty("templateId");
+    expect(createArgs.data.status).toBe("DRAFT");
+  });
+
+  it("does not include formData or photos on the create payload (job-data mutation guard)", async () => {
+    const formData = new FormData();
+    formData.set("name", "Just A Name");
+
+    await createJob(null, formData);
+
+    const createArgs = vi.mocked(db.job.create).mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    // createJob writes only the fresh-DRAFT shape — never seeds formData
+    // or photos. This guard catches accidental wiring of either column.
+    expect(createArgs.data).not.toHaveProperty("formData");
+    expect(createArgs.data).not.toHaveProperty("photos");
   });
 });
 
