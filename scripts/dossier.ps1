@@ -1300,10 +1300,13 @@ function Invoke-NotebookLMPipe {
     # 1b. nlm doctor auth check — soft-fail if NotebookLM is not authenticated.
     #     `nlm doctor` checks cookies and other state; we look for 'Cookies: present' in the output.
     #     We do a 10-second timeout to avoid blocking the pipeline on a missing/broken nlm install.
-    $nlmCmd = Get-Command nlm -ErrorAction SilentlyContinue
-    if ($nlmCmd) {
-        $nlmJob = Start-Job -ScriptBlock {
-            $output = & nlm doctor 2>&1
+    #     Resolve nlm.exe path in parent process so the Start-Job subprocess (which doesn't inherit
+    #     mid-session PATH modifications) can still find it via explicit path.
+    $nlmExe = (Get-Command nlm -ErrorAction SilentlyContinue).Source
+    if ($nlmExe) {
+        $nlmJob = Start-Job -ArgumentList $nlmExe -ScriptBlock {
+            param($nlmExe)
+            $output = & $nlmExe doctor 2>&1
             [PSCustomObject]@{ Output = $output; ExitCode = $LASTEXITCODE }
         }
         $completed = Wait-Job -Job $nlmJob -Timeout 10
@@ -1316,6 +1319,9 @@ function Invoke-NotebookLMPipe {
         $nlmResult = Receive-Job -Job $nlmJob
         Remove-Job -Job $nlmJob
         $doctorText = ($nlmResult.Output | Out-String)
+        # Strip ANSI CSI escape sequences (color codes, e.g. \e[32m, \e[0m, \e[1;31m) so the
+        # regex isn't broken by color codes injected between 'Cookies:' and 'present'.
+        $doctorText = $doctorText -replace "$([char]27)\[[0-9;]*[a-zA-Z]", ''
         if ($doctorText -notmatch 'Cookies:\s*present') {
             Write-Warning "NotebookLM auth check (nlm doctor) didn't see 'Cookies: present' — auth may be expired or doctor output changed."
             Write-Warning "Run 'nlm login' in an interactive terminal to refresh auth, then re-run dossier."
@@ -1401,20 +1407,19 @@ Steps (do them in this exact order — do not skip):
 "@
 
     Write-Host "       Calling claude CLI to drive notebooklm-mcp ..." -ForegroundColor DarkGray
+    $nlmLog = Join-Path $OutDir 'claude-notebooklm.log'
+    Set-Content -Path $nlmLog -Value '=== claude -p --dangerously-skip-permissions --model claude-sonnet-4-6 ===' -Encoding utf8
     try {
-        $nlmLog = Join-Path $OutDir 'claude-notebooklm.log'
-        Set-Content -Path $nlmLog -Value '=== claude -p --dangerously-skip-permissions --model claude-sonnet-4-6 ===' -Encoding utf8
-        try {
-            $stdout = $prompt | & claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --add-dir $Script:VideoMemRoot 2>&1
-            Add-Content -Path $nlmLog -Value $stdout -Encoding utf8
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warning "claude CLI failed on NotebookLM step (exit $LASTEXITCODE). Continuing."
-                return $result
-            }
-        } catch {
-            Write-Warning "claude CLI threw on NotebookLM step: $($_.Exception.Message). Continuing."
+        $stdout = $prompt | & claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --add-dir $Script:VideoMemRoot 2>&1
+        Add-Content -Path $nlmLog -Value $stdout -Encoding utf8
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "claude CLI failed on NotebookLM step (exit $LASTEXITCODE). Continuing."
             return $result
         }
+    } catch {
+        Write-Warning "claude CLI threw on NotebookLM step: $($_.Exception.Message). Continuing."
+        return $result
+    }
 
     # 5. Parse the last JSON line out of stdout. claude streams ANSI + chatter
     #    above it; we only care about the final {"notebook_url":...} line.
