@@ -1303,16 +1303,27 @@ function Invoke-NotebookLMPipe {
     #     blocking the pipeline on a missing/broken nlm install.
     $nlmCmd = Get-Command nlm -ErrorAction SilentlyContinue
     if ($nlmCmd) {
-        try {
-            $nlmWhoami = & nlm whoami 2>&1
-            if ($LASTEXITCODE -ne 0 -or -not ($nlmWhoami -match '@')) {
-                Write-Warning "NotebookLM not authenticated (nlm whoami failed). Run 'nlm login' then retry. Skipping NotebookLM auto-pipe."
-                return $result
-            }
-        } catch {
-            Write-Warning "nlm whoami threw: $($_.Exception.Message). Skipping NotebookLM auto-pipe."
+        $nlmJob = Start-Job -ScriptBlock {
+            $output = & nlm whoami 2>&1
+            [PSCustomObject]@{ Output = $output; ExitCode = $LASTEXITCODE }
+        }
+        $completed = Wait-Job -Job $nlmJob -Timeout 10
+        if (-not $completed) {
+            Stop-Job -Job $nlmJob
+            Remove-Job -Job $nlmJob -Force
+            Write-Warning "nlm whoami timed out after 10s; skipping NotebookLM auto-pipe."
             return $result
         }
+        $nlmResult = Receive-Job -Job $nlmJob
+        Remove-Job -Job $nlmJob
+        if ($nlmResult.ExitCode -ne 0) {
+            Write-Warning "NotebookLM auth appears expired (nlm whoami exit $($nlmResult.ExitCode))."
+            Write-Warning "Run 'nlm login' in an interactive terminal to refresh auth, then re-run dossier."
+            Write-Warning "Skipping NotebookLM auto-pipe for this run."
+            return $result
+        }
+        $whoamiOut = $nlmResult.Output
+        Write-Host "       NotebookLM auth OK: $($whoamiOut | Select-Object -First 1)" -ForegroundColor DarkGray
     } else {
         Write-Host "       (nlm CLI not on PATH; skipping NotebookLM auth check)" -ForegroundColor DarkGray
     }
