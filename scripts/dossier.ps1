@@ -1297,33 +1297,32 @@ function Invoke-NotebookLMPipe {
         return $result
     }
 
-    # 1b. nlm whoami auth check — soft-fail if NotebookLM is not authenticated.
-    #     `nlm whoami` exits 0 and prints an email when authenticated; exits non-zero
-    #     or prints nothing when unauthenticated. We do a 10-second timeout to avoid
-    #     blocking the pipeline on a missing/broken nlm install.
+    # 1b. nlm doctor auth check — soft-fail if NotebookLM is not authenticated.
+    #     `nlm doctor` checks cookies and other state; we look for 'Cookies: present' in the output.
+    #     We do a 10-second timeout to avoid blocking the pipeline on a missing/broken nlm install.
     $nlmCmd = Get-Command nlm -ErrorAction SilentlyContinue
     if ($nlmCmd) {
         $nlmJob = Start-Job -ScriptBlock {
-            $output = & nlm whoami 2>&1
+            $output = & nlm doctor 2>&1
             [PSCustomObject]@{ Output = $output; ExitCode = $LASTEXITCODE }
         }
         $completed = Wait-Job -Job $nlmJob -Timeout 10
         if (-not $completed) {
             Stop-Job -Job $nlmJob
             Remove-Job -Job $nlmJob -Force
-            Write-Warning "nlm whoami timed out after 10s; skipping NotebookLM auto-pipe."
+            Write-Warning "nlm doctor timed out after 10s; skipping NotebookLM auto-pipe."
             return $result
         }
         $nlmResult = Receive-Job -Job $nlmJob
         Remove-Job -Job $nlmJob
-        if ($nlmResult.ExitCode -ne 0) {
-            Write-Warning "NotebookLM auth appears expired (nlm whoami exit $($nlmResult.ExitCode))."
+        $doctorText = ($nlmResult.Output | Out-String)
+        if ($doctorText -notmatch 'Cookies:\s*present') {
+            Write-Warning "NotebookLM auth check (nlm doctor) didn't see 'Cookies: present' — auth may be expired or doctor output changed."
             Write-Warning "Run 'nlm login' in an interactive terminal to refresh auth, then re-run dossier."
             Write-Warning "Skipping NotebookLM auto-pipe for this run."
             return $result
         }
-        $whoamiOut = $nlmResult.Output
-        Write-Host "       NotebookLM auth OK: $($whoamiOut | Select-Object -First 1)" -ForegroundColor DarkGray
+        Write-Host "       NotebookLM auth OK (nlm doctor confirmed cookies present)" -ForegroundColor DarkGray
     } else {
         Write-Host "       (nlm CLI not on PATH; skipping NotebookLM auth check)" -ForegroundColor DarkGray
     }
