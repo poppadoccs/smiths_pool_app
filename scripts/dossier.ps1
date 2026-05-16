@@ -1403,23 +1403,18 @@ Steps (do them in this exact order — do not skip):
     Write-Host "       Calling claude CLI to drive notebooklm-mcp ..." -ForegroundColor DarkGray
     try {
         $nlmLog = Join-Path $OutDir 'claude-notebooklm.log'
-        Set-Content -Path $nlmLog -Value '=== attempt 1: claude -p ===' -Encoding utf8
-        $stdout = $prompt | & claude -p --add-dir $Script:VideoMemRoot 2>&1
-        Add-Content -Path $nlmLog -Value $stdout -Encoding utf8
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "claude -p exit $LASTEXITCODE on NotebookLM step; retrying with --dangerously-skip-permissions"
-            Add-Content -Path $nlmLog -Value '=== attempt 2: --dangerously-skip-permissions ===' -Encoding utf8
-            $stdout = $prompt | & claude --dangerously-skip-permissions -p --add-dir $Script:VideoMemRoot 2>&1
+        Set-Content -Path $nlmLog -Value '=== claude -p --dangerously-skip-permissions --model claude-sonnet-4-6 ===' -Encoding utf8
+        try {
+            $stdout = $prompt | & claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --add-dir $Script:VideoMemRoot 2>&1
             Add-Content -Path $nlmLog -Value $stdout -Encoding utf8
-        }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "claude CLI failed on NotebookLM step (exit $LASTEXITCODE). Continuing."
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "claude CLI failed on NotebookLM step (exit $LASTEXITCODE). Continuing."
+                return $result
+            }
+        } catch {
+            Write-Warning "claude CLI threw on NotebookLM step: $($_.Exception.Message). Continuing."
             return $result
         }
-    } catch {
-        Write-Warning "claude CLI threw on NotebookLM step: $($_.Exception.Message). Continuing."
-        return $result
-    }
 
     # 5. Parse the last JSON line out of stdout. claude streams ANSI + chatter
     #    above it; we only care about the final {"notebook_url":...} line.
@@ -2149,13 +2144,8 @@ Steps:
                 # child claude session is sandboxed to the script's CWD and refuses cross-tree reads.
                 Remove-Item -Path $portfolioMd -ErrorAction SilentlyContinue
                 $tourLog = Join-Path $outDir 'claude-tour.log'
-                Set-Content -Path $tourLog -Value '=== attempt 1: claude -p ===' -Encoding utf8
-                $tourPrompt | & claude -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $tourLog -Append | Out-Host
-                if (-not (Test-Path $portfolioMd)) {
-                    Write-Warning "claude -p did not produce PORTFOLIO-TOUR.md; retrying with --dangerously-skip-permissions"
-                    Add-Content -Path $tourLog -Value '=== attempt 2: --dangerously-skip-permissions ===' -Encoding utf8
-                    $tourPrompt | & claude --dangerously-skip-permissions -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $tourLog -Append | Out-Host
-                }
+                Set-Content -Path $tourLog -Value '=== claude -p --dangerously-skip-permissions --model claude-sonnet-4-6 ===' -Encoding utf8
+                $tourPrompt | & claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $tourLog -Append | Out-Host
                 if (Test-Path $portfolioMd) {
                     $tourRan = $true
                     Write-Host "       PORTFOLIO-TOUR.md written" -ForegroundColor DarkGray
@@ -2258,13 +2248,8 @@ Do NOT include preamble - start with the heading.
             try {
                 Remove-Item -Path $recipeMd -ErrorAction SilentlyContinue
                 $recipeLog = Join-Path $outDir 'claude-recipe.log'
-                Set-Content -Path $recipeLog -Value '=== attempt 1: claude -p ===' -Encoding utf8
-                $recipePrompt | & claude --model claude-haiku-4-5-20251001 -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
-                if (-not (Test-Path $recipeMd)) {
-                    Write-Warning "claude -p did not produce RECIPE.md; retrying with --dangerously-skip-permissions"
-                    Add-Content -Path $recipeLog -Value '=== attempt 2: --dangerously-skip-permissions ===' -Encoding utf8
-                    $recipePrompt | & claude --dangerously-skip-permissions --model claude-haiku-4-5-20251001 -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
-                }
+                Set-Content -Path $recipeLog -Value '=== claude -p --dangerously-skip-permissions --model claude-haiku-4-5-20251001 ===' -Encoding utf8
+                $recipePrompt | & claude --dangerously-skip-permissions --model claude-haiku-4-5-20251001 -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
                 if (Test-Path $recipeMd) {
                     $recipeRan = $true
                     Write-Host "       RECIPE.md written" -ForegroundColor DarkGray
