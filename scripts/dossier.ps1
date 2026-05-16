@@ -2137,6 +2137,7 @@ Steps:
                 # Try `claude -p` first (one-shot prompt mode), then fall back to dangerous-skip-permissions.
                 # --add-dir grants claude read/write to the dossier folder; without it the
                 # child claude session is sandboxed to the script's CWD and refuses cross-tree reads.
+                Remove-Item -Path $portfolioMd -ErrorAction SilentlyContinue
                 $tourLog = Join-Path $outDir 'claude-tour.log'
                 Set-Content -Path $tourLog -Value '=== attempt 1: claude -p ===' -Encoding utf8
                 $tourPrompt | & claude -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $tourLog -Append | Out-Host
@@ -2245,6 +2246,7 @@ Be specific. Cite library names. Reference the frames you looked at.
 Do NOT include preamble - start with the heading.
 "@
             try {
+                Remove-Item -Path $recipeMd -ErrorAction SilentlyContinue
                 $recipeLog = Join-Path $outDir 'claude-recipe.log'
                 Set-Content -Path $recipeLog -Value '=== attempt 1: claude -p ===' -Encoding utf8
                 $recipePrompt | & claude -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
