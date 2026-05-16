@@ -1446,6 +1446,308 @@ Steps (do them in this exact order — do not skip):
 }
 
 # =============================================================================
+# NATIVE RECIPE FALLBACK — calls Anthropic API directly (no claude CLI needed)
+# to synthesize RECIPE.md from whatever dossier sources exist.
+# Returns $true if RECIPE.md was produced, $false otherwise.
+# =============================================================================
+function Invoke-NativeRecipe {
+    param(
+        [string]$OutDir,
+        [string]$BriefMd,
+        [string]$TranscriptTxt,
+        [string]$PortfolioMd,
+        [string]$ProfileJson,
+        [string]$OwnerUsername,
+        [string]$ShortCode,
+        [string]$RecipeMd
+    )
+
+    if (-not $env:ANTHROPIC_API_KEY) {
+        Write-Host "       (ANTHROPIC_API_KEY not set; skipping native recipe fallback)" -ForegroundColor DarkGray
+        return $false
+    }
+
+    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pyCmd) {
+        Write-Host "       (python not on PATH; skipping native recipe fallback)" -ForegroundColor DarkGray
+        return $false
+    }
+
+    Write-Host "       Synthesizing RECIPE.md via native Anthropic API fallback ..." -ForegroundColor DarkGray
+
+    # Build content string from available sources
+    $contentParts = [System.Collections.Generic.List[string]]::new()
+    if ($BriefMd -and (Test-Path $BriefMd)) {
+        $contentParts.Add("## BRIEF.md`n" + (Get-Content $BriefMd -Raw -Encoding utf8))
+    }
+    if ($TranscriptTxt -and (Test-Path $TranscriptTxt)) {
+        $raw = Get-Content $TranscriptTxt -Raw -Encoding utf8
+        # Truncate transcript to 8000 chars to stay within token budget
+        if ($raw.Length -gt 8000) { $raw = $raw.Substring(0, 8000) + "`n[... truncated ...]" }
+        $contentParts.Add("## transcript.txt`n" + $raw)
+    }
+    if ($PortfolioMd -and (Test-Path $PortfolioMd)) {
+        $contentParts.Add("## PORTFOLIO-TOUR.md`n" + (Get-Content $PortfolioMd -Raw -Encoding utf8))
+    }
+    if ($contentParts.Count -eq 0) {
+        Write-Warning "No source files available for native recipe; skipping."
+        return $false
+    }
+
+    $sourcesText = $contentParts -join "`n`n---`n`n"
+
+    # The Python script reads ANTHROPIC_API_KEY and DOSSIER_RECIPE_PATH from env,
+    # and receives the prompt text via stdin to avoid shell quoting issues.
+    $pyScript = @'
+import sys, os, json, urllib.request, urllib.error
+
+api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+out_path = os.environ.get('DOSSIER_RECIPE_PATH', '')
+if not api_key:
+    print('[native-recipe] ANTHROPIC_API_KEY not set', file=sys.stderr)
+    sys.exit(1)
+if not out_path:
+    print('[native-recipe] DOSSIER_RECIPE_PATH not set', file=sys.stderr)
+    sys.exit(1)
+
+prompt_text = sys.stdin.read()
+
+payload = {
+    'model': 'claude-sonnet-4-6',
+    'max_tokens': 2048,
+    'messages': [{'role': 'user', 'content': prompt_text}]
+}
+data = json.dumps(payload).encode('utf-8')
+req = urllib.request.Request(
+    'https://api.anthropic.com/v1/messages',
+    data=data,
+    headers={
+        'x-api-key': api_key,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+    },
+    method='POST'
+)
+try:
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        body = json.loads(resp.read().decode('utf-8'))
+    recipe_text = body['content'][0]['text']
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(recipe_text)
+    print('[native-recipe] RECIPE.md written OK')
+except urllib.error.HTTPError as e:
+    err_body = e.read().decode('utf-8', errors='replace')
+    print(f'[native-recipe] HTTP {e.code}: {err_body}', file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f'[native-recipe] error: {e}', file=sys.stderr)
+    sys.exit(1)
+'@
+
+    $recipePrompt = @"
+You are synthesizing a reproduction recipe for a creator's portfolio work.
+
+Dossier owner: @$OwnerUsername
+Short code:    $ShortCode
+
+Source material (use everything provided):
+$sourcesText
+
+Synthesize RECIPE.md with this structure:
+# Recipe - @$OwnerUsername / $ShortCode
+
+## Stack to use
+(Bullet list. Specific library names + versions where known.
+ Include framework, 3D/animation libs, scroll lib, font choices.)
+
+## Step-by-step build
+(Numbered steps. Each step should be actionable: what to install, what
+ file to create, what code primitive to write. No hand-waving.)
+
+## Key techniques
+(Bullet list of the 3-7 visual techniques that produce the look.
+ Be specific about CSS properties, easing curves, parallax depths,
+ lighting setups, etc. Avoid generic advice.)
+
+## Honest assessment
+(2-3 sentences: how hard is this to reproduce? Is the magic in 1
+ technique or 5? Is it realtime or pre-rendered?)
+
+Be specific. Cite library names. Do NOT include preamble - start with the heading.
+"@
+
+    $pyTempFile = [System.IO.Path]::GetTempFileName() + '.py'
+    try {
+        Set-Content -Path $pyTempFile -Value $pyScript -Encoding utf8
+        $env:DOSSIER_RECIPE_PATH = $RecipeMd
+        $recipePrompt | & python $pyTempFile 2>&1 | Out-Host
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $RecipeMd)) {
+            Write-Host "       RECIPE.md written via native API fallback" -ForegroundColor DarkGray
+            return $true
+        } else {
+            Write-Warning "Native recipe fallback: python exited $LASTEXITCODE or RECIPE.md not produced."
+            return $false
+        }
+    } catch {
+        Write-Warning "Native recipe fallback threw: $($_.Exception.Message)"
+        return $false
+    } finally {
+        $env:DOSSIER_RECIPE_PATH = $null
+        if (Test-Path $pyTempFile) { Remove-Item $pyTempFile -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# =============================================================================
+# NATIVE TOUR FALLBACK — runs a minimal Python/Playwright script to capture
+# portfolio screenshots and write PORTFOLIO-TOUR.md, no claude CLI needed.
+# Returns $true if PORTFOLIO-TOUR.md was produced, $false otherwise.
+# =============================================================================
+function Invoke-NativeTour {
+    param(
+        [string]$OutDir,
+        [string]$TargetUrl,
+        [string]$PortfolioMd,
+        [string]$OwnerUsername
+    )
+
+    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pyCmd) {
+        Write-Host "       (python not on PATH; skipping native tour fallback)" -ForegroundColor DarkGray
+        return $false
+    }
+
+    # Check playwright is importable
+    $null = & python -c "import playwright" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "       (playwright not installed; skipping native tour fallback)" -ForegroundColor DarkGray
+        return $false
+    }
+
+    Write-Host "       Running native Python/Playwright tour fallback ..." -ForegroundColor DarkGray
+
+    # Single-quoted here-string: no PS variable expansion inside.
+    # URL and output dir are passed via env vars DOSSIER_TARGET_URL and DOSSIER_OUT_DIR.
+    $pyScript = @'
+import sys, os, json
+from datetime import date
+
+target_url = os.environ.get('DOSSIER_TARGET_URL', '')
+out_dir = os.environ.get('DOSSIER_OUT_DIR', '')
+owner = os.environ.get('DOSSIER_OWNER', '')
+
+if not target_url:
+    print('[native-tour] DOSSIER_TARGET_URL not set', file=sys.stderr)
+    sys.exit(1)
+if not out_dir:
+    print('[native-tour] DOSSIER_OUT_DIR not set', file=sys.stderr)
+    sys.exit(1)
+
+viewport_png = os.path.join(out_dir, 'portfolio-viewport.png')
+fullpage_png = os.path.join(out_dir, 'portfolio-fullpage.png')
+tour_md = os.path.join(out_dir, 'PORTFOLIO-TOUR.md')
+
+fingerprint_js = """
+(function() {
+  var d = document;
+  return {
+    detected: {
+      React: !!(window.React || d.querySelector('[data-reactroot],[data-reactid]')),
+      Next: !!(window.__NEXT_DATA__ || d.getElementById('__next')),
+      Vue: !!(window.Vue || window.__vue_app__),
+      Webflow: !!(window.Webflow),
+      GSAP: !!(window.gsap || window.TweenMax),
+      Lenis: !!(window.Lenis),
+      THREE: !!(window.THREE),
+      Astro: !!(d.querySelector('meta[name=\"generator\"][content*=\"Astro\"]'))
+    },
+    canvasCount: d.querySelectorAll('canvas').length,
+    videoCount: d.querySelectorAll('video').length,
+    imgCount: d.querySelectorAll('img').length,
+    linkCount: d.querySelectorAll('a').length,
+    docTitle: d.title,
+    docLen: d.documentElement.outerHTML.length,
+    generator: (d.querySelector('meta[name=\"generator\"]') || {}).content || null,
+    bodyClasses: d.body.className,
+    allScriptCount: d.querySelectorAll('script').length
+  };
+})()
+"""
+
+try:
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={'width': 1440, 'height': 900})
+        page.goto(target_url, wait_until='networkidle', timeout=30000)
+        page.screenshot(path=viewport_png)
+        page.screenshot(path=fullpage_png, full_page=True)
+        fp = page.evaluate(fingerprint_js)
+        browser.close()
+
+    fp_json = json.dumps(fp, indent=2)
+    today = date.today().isoformat()
+
+    lines = [
+        '# Portfolio Tour -- ' + owner + ' -- ' + target_url,
+        '',
+        '- **URL**: ' + target_url,
+        '- **Date**: ' + today,
+        '- **Dossier folder**: `' + out_dir + '`',
+        '- **Page title**: ' + fp.get('docTitle', '(unknown)'),
+        '',
+        '## Fingerprint',
+        '',
+        '```json',
+        fp_json,
+        '```',
+        '',
+        '## Screenshots',
+        '',
+        '![Viewport](./portfolio-viewport.png)',
+        '![Full page](./portfolio-fullpage.png)',
+        '',
+        '## Notes',
+        '',
+        '*(Generated by native Python/Playwright fallback. No claude CLI was available.)*',
+        '',
+    ]
+
+    with open(tour_md, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+
+    print('[native-tour] PORTFOLIO-TOUR.md written OK')
+
+except Exception as e:
+    print(f'[native-tour] error: {e}', file=sys.stderr)
+    sys.exit(1)
+'@
+
+    $pyTempFile = [System.IO.Path]::GetTempFileName() + '.py'
+    try {
+        Set-Content -Path $pyTempFile -Value $pyScript -Encoding utf8
+        $env:DOSSIER_TARGET_URL = $TargetUrl
+        $env:DOSSIER_OUT_DIR    = $OutDir
+        $env:DOSSIER_OWNER      = $OwnerUsername
+        & python $pyTempFile 2>&1 | Out-Host
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $PortfolioMd)) {
+            Write-Host "       PORTFOLIO-TOUR.md written via native fallback" -ForegroundColor DarkGray
+            return $true
+        } else {
+            Write-Warning "Native tour fallback: python exited $LASTEXITCODE or PORTFOLIO-TOUR.md not produced."
+            return $false
+        }
+    } catch {
+        Write-Warning "Native tour fallback threw: $($_.Exception.Message)"
+        return $false
+    } finally {
+        $env:DOSSIER_TARGET_URL = $null
+        $env:DOSSIER_OUT_DIR    = $null
+        $env:DOSSIER_OWNER      = $null
+        if (Test-Path $pyTempFile) { Remove-Item $pyTempFile -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# =============================================================================
 # CORE PIPELINE — given a normalized post dict, run frames + audio + Whisper +
 # profile chase + manifest + brief + html + (optional) Playwright tour + recipe.
 # Returns a hashtable describing the result.
@@ -1872,10 +2174,13 @@ Steps:
                 }
             }
         } else {
-            # Fall back to v2 behavior — write claude-prompt.txt for manual paste
-            Write-Warning "claude CLI not on PATH - writing claude-prompt.txt for manual paste."
-            $promptTxt = Join-Path $outDir 'claude-prompt.txt'
-            @"
+            # claude CLI not on PATH — try native Python/Playwright fallback, then
+            # write claude-prompt.txt for manual paste as a last resort.
+            $tourRan = Invoke-NativeTour -OutDir $outDir -TargetUrl $pUrl -PortfolioMd $portfolioMd -OwnerUsername $ownerUsername
+            if (-not $tourRan) {
+                Write-Warning "Native tour fallback also unavailable - writing claude-prompt.txt for manual paste."
+                $promptTxt = Join-Path $outDir 'claude-prompt.txt'
+                @"
 # Playwright recon - @$ownerUsername's portfolio
 
 Before generating any code, read C:\Users\renea\video-memory\INDEX.md and follow the
@@ -1893,6 +2198,7 @@ $outDir
 3. Run the JS fingerprint evaluate from INDEX.md
 4. Write $outDir\PORTFOLIO-TOUR.md
 "@ | Set-Content -Path $promptTxt -Encoding utf8
+            }
         }
     } elseif ($DoTour -and -not $pUrl) {
         Write-Host "       (No portfolio URL; skipping Playwright tour)" -ForegroundColor DarkGray
@@ -1957,7 +2263,16 @@ Do NOT include preamble - start with the heading.
                 Write-Warning "claude CLI failed for recipe: $($_.Exception.Message)."
             }
         } else {
-            Write-Host "       (claude CLI not on PATH; skipping RECIPE.md)" -ForegroundColor DarkGray
+            # claude CLI not on PATH — try native Anthropic API fallback
+            $recipeRan = Invoke-NativeRecipe `
+                -OutDir       $outDir `
+                -BriefMd      $briefMd `
+                -TranscriptTxt $transcriptTxt `
+                -PortfolioMd  $portfolioMd `
+                -ProfileJson  $profileJson `
+                -OwnerUsername $ownerUsername `
+                -ShortCode    $shortCode `
+                -RecipeMd     $recipeMd
         }
     }
 
