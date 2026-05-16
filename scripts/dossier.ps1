@@ -1818,8 +1818,8 @@ Steps:
                 $tourLog = Join-Path $outDir 'claude-tour.log'
                 Set-Content -Path $tourLog -Value '=== attempt 1: claude -p ===' -Encoding utf8
                 $tourPrompt | & claude -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $tourLog -Append | Out-Host
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Warning "claude -p exit $LASTEXITCODE; retrying with --dangerously-skip-permissions"
+                if (-not (Test-Path $portfolioMd)) {
+                    Write-Warning "claude -p did not produce PORTFOLIO-TOUR.md; retrying with --dangerously-skip-permissions"
                     Add-Content -Path $tourLog -Value '=== attempt 2: --dangerously-skip-permissions ===' -Encoding utf8
                     $tourPrompt | & claude --dangerously-skip-permissions -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $tourLog -Append | Out-Host
                 }
@@ -1922,8 +1922,8 @@ Do NOT include preamble - start with the heading.
                 $recipeLog = Join-Path $outDir 'claude-recipe.log'
                 Set-Content -Path $recipeLog -Value '=== attempt 1: claude -p ===' -Encoding utf8
                 $recipePrompt | & claude -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Warning "claude -p exit $LASTEXITCODE; retrying with --dangerously-skip-permissions"
+                if (-not (Test-Path $recipeMd)) {
+                    Write-Warning "claude -p did not produce RECIPE.md; retrying with --dangerously-skip-permissions"
                     Add-Content -Path $recipeLog -Value '=== attempt 2: --dangerously-skip-permissions ===' -Encoding utf8
                     $recipePrompt | & claude --dangerously-skip-permissions -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
                 }
