@@ -1297,6 +1297,26 @@ function Invoke-NotebookLMPipe {
         return $result
     }
 
+    # 1b. nlm whoami auth check — soft-fail if NotebookLM is not authenticated.
+    #     `nlm whoami` exits 0 and prints an email when authenticated; exits non-zero
+    #     or prints nothing when unauthenticated. We do a 10-second timeout to avoid
+    #     blocking the pipeline on a missing/broken nlm install.
+    $nlmCmd = Get-Command nlm -ErrorAction SilentlyContinue
+    if ($nlmCmd) {
+        try {
+            $nlmWhoami = & nlm whoami 2>&1
+            if ($LASTEXITCODE -ne 0 -or -not ($nlmWhoami -match '@')) {
+                Write-Warning "NotebookLM not authenticated (nlm whoami failed). Run 'nlm login' then retry. Skipping NotebookLM auto-pipe."
+                return $result
+            }
+        } catch {
+            Write-Warning "nlm whoami threw: $($_.Exception.Message). Skipping NotebookLM auto-pipe."
+            return $result
+        }
+    } else {
+        Write-Host "       (nlm CLI not on PATH; skipping NotebookLM auth check)" -ForegroundColor DarkGray
+    }
+
     # 2. Settle the target notebook name
     if (-not $NotebookName) { $NotebookName = "Creator: @$OwnerUsername" }
 
