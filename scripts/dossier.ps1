@@ -2365,7 +2365,7 @@ Do NOT include preamble - start with the heading.
         -Timestamp $Post.timestamp `
         -DisplayUrl $Post.displayUrl `
         -ProfileName $pName -ProfileBio $pBio -ProfileFollowers $pFollow -ProfilePosts $pPosts -ProfileUrl $pUrl `
-        -TranscriptPath (if ($transcriptOk) { $transcriptTxt } else { $null }) `
+        -TranscriptPath $(if ($transcriptOk) { $transcriptTxt } else { $null }) `
         -FramesDir $framesDir -FrameCount $frameCount `
         -VideoPath $videoPath
 
