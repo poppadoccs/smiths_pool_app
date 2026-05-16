@@ -2259,11 +2259,11 @@ Do NOT include preamble - start with the heading.
                 Remove-Item -Path $recipeMd -ErrorAction SilentlyContinue
                 $recipeLog = Join-Path $outDir 'claude-recipe.log'
                 Set-Content -Path $recipeLog -Value '=== attempt 1: claude -p ===' -Encoding utf8
-                $recipePrompt | & claude -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
+                $recipePrompt | & claude --model claude-haiku-4-5-20251001 -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
                 if (-not (Test-Path $recipeMd)) {
                     Write-Warning "claude -p did not produce RECIPE.md; retrying with --dangerously-skip-permissions"
                     Add-Content -Path $recipeLog -Value '=== attempt 2: --dangerously-skip-permissions ===' -Encoding utf8
-                    $recipePrompt | & claude --dangerously-skip-permissions -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
+                    $recipePrompt | & claude --dangerously-skip-permissions --model claude-haiku-4-5-20251001 -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
                 }
                 if (Test-Path $recipeMd) {
                     $recipeRan = $true
