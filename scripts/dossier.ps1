@@ -401,6 +401,16 @@ function Test-PythonModule {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Get-DefaultBrowserExe {
+    # Returns full path to first available browser in priority order.
+    # Used by auto-open paths to bypass Windows file association.
+    foreach ($name in @('msedge.exe','chrome.exe','firefox.exe','brave.exe')) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($cmd) { return $cmd.Source }
+    }
+    return $null
+}
+
 function Get-WhisperBackend {
     if (Test-PythonModule -ModuleName 'faster_whisper') {
         return @{ Backend = 'faster-whisper'; Bin = $null }
@@ -2360,7 +2370,12 @@ Do NOT include preamble - start with the heading.
 
     # --- Auto-open HTML ---
     if ($DoOpen -and (Test-Path $htmlPath)) {
-        try { Start-Process $htmlPath } catch { Write-Warning "Could not auto-open $htmlPath : $($_.Exception.Message)" }
+        $browser = Get-DefaultBrowserExe
+        if ($browser) {
+            try { Start-Process -FilePath $browser -ArgumentList $htmlPath } catch { Write-Warning "Could not auto-open $htmlPath : $($_.Exception.Message)" }
+        } else {
+            try { Start-Process $htmlPath } catch { Write-Warning "Could not auto-open $htmlPath : $($_.Exception.Message)" }
+        }
     }
 
     return @{
@@ -3278,7 +3293,14 @@ if ($Watch) {
         -NoArchive:$NoArchive -RebuildArchive:$RebuildArchive
     if ($OpenArchive) {
         $archIdx = Join-Path $Script:VideoMemRoot 'ARCHIVE\index.html'
-        if (Test-Path $archIdx) { try { Start-Process $archIdx } catch {} }
+        if (Test-Path $archIdx) {
+            $browser = Get-DefaultBrowserExe
+            if ($browser) {
+                try { Start-Process -FilePath $browser -ArgumentList $archIdx } catch {}
+            } else {
+                try { Start-Process $archIdx } catch {}
+            }
+        }
     }
     exit 0
 }
@@ -3307,7 +3329,14 @@ if ((Test-Path $Url) -and ($Url -match '\.txt$')) {
         -NoArchive:$NoArchive -RebuildArchive:$RebuildArchive
     if ($OpenArchive) {
         $archIdx = Join-Path $Script:VideoMemRoot 'ARCHIVE\index.html'
-        if (Test-Path $archIdx) { try { Start-Process $archIdx } catch {} }
+        if (Test-Path $archIdx) {
+            $browser = Get-DefaultBrowserExe
+            if ($browser) {
+                try { Start-Process -FilePath $browser -ArgumentList $archIdx } catch {}
+            } else {
+                try { Start-Process $archIdx } catch {}
+            }
+        }
     }
     exit 0
 }
@@ -3328,7 +3357,14 @@ $result = Invoke-DossierForUrl -Url $Url -Whisper $whisper `
 
 if ($OpenArchive) {
     $archIdx = Join-Path $Script:VideoMemRoot 'ARCHIVE\index.html'
-    if (Test-Path $archIdx) { try { Start-Process $archIdx } catch {} }
+    if (Test-Path $archIdx) {
+        $browser = Get-DefaultBrowserExe
+        if ($browser) {
+            try { Start-Process -FilePath $browser -ArgumentList $archIdx } catch {}
+        } else {
+            try { Start-Process $archIdx } catch {}
+        }
+    }
 }
 
 switch ($result.status) {
