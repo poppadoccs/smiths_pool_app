@@ -2254,7 +2254,7 @@ Do NOT include preamble - start with the heading.
                 Remove-Item -Path $recipeMd -ErrorAction SilentlyContinue
                 $recipeLog = Join-Path $outDir 'claude-recipe.log'
                 Set-Content -Path $recipeLog -Value '=== claude -p --dangerously-skip-permissions --model claude-haiku-4-5-20251001 ===' -Encoding utf8
-                $recipePrompt | & claude --dangerously-skip-permissions --model claude-haiku-4-5-20251001 -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
+                $recipePrompt | & claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --add-dir $Script:VideoMemRoot 2>&1 | Tee-Object -FilePath $recipeLog -Append | Out-Host
                 if (Test-Path $recipeMd) {
                     $recipeRan = $true
                     Write-Host "       RECIPE.md written" -ForegroundColor DarkGray
