@@ -404,9 +404,25 @@ function Test-PythonModule {
 function Get-DefaultBrowserExe {
     # Returns full path to first available browser in priority order.
     # Used by auto-open paths to bypass Windows file association.
+    # PATH probe first; then known Windows install locations (browsers usually aren't on PATH).
     foreach ($name in @('msedge.exe','chrome.exe','firefox.exe','brave.exe')) {
         $cmd = Get-Command $name -ErrorAction SilentlyContinue
         if ($cmd) { return $cmd.Source }
+    }
+    $candidates = @(
+        "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+        "$env:LOCALAPPDATA\Microsoft\Edge\Application\msedge.exe",
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe",
+        "$env:ProgramFiles\Mozilla Firefox\firefox.exe",
+        "${env:ProgramFiles(x86)}\Mozilla Firefox\firefox.exe",
+        "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe",
+        "${env:ProgramFiles(x86)}\BraveSoftware\Brave-Browser\Application\brave.exe"
+    )
+    foreach ($p in $candidates) {
+        if (Test-Path $p) { return $p }
     }
     return $null
 }
@@ -2372,7 +2388,7 @@ Do NOT include preamble - start with the heading.
     if ($DoOpen -and (Test-Path $htmlPath)) {
         $browser = Get-DefaultBrowserExe
         if ($browser) {
-            try { Start-Process -FilePath $browser -ArgumentList $htmlPath } catch { Write-Warning "Could not auto-open $htmlPath : $($_.Exception.Message)" }
+            try { Start-Process -FilePath $browser -ArgumentList "`"$htmlPath`"" } catch { Write-Warning "Could not auto-open $htmlPath : $($_.Exception.Message)" }
         } else {
             try { Start-Process $htmlPath } catch { Write-Warning "Could not auto-open $htmlPath : $($_.Exception.Message)" }
         }
@@ -3296,7 +3312,7 @@ if ($Watch) {
         if (Test-Path $archIdx) {
             $browser = Get-DefaultBrowserExe
             if ($browser) {
-                try { Start-Process -FilePath $browser -ArgumentList $archIdx } catch {}
+                try { Start-Process -FilePath $browser -ArgumentList "`"$archIdx`"" } catch {}
             } else {
                 try { Start-Process $archIdx } catch {}
             }
@@ -3332,7 +3348,7 @@ if ((Test-Path $Url) -and ($Url -match '\.txt$')) {
         if (Test-Path $archIdx) {
             $browser = Get-DefaultBrowserExe
             if ($browser) {
-                try { Start-Process -FilePath $browser -ArgumentList $archIdx } catch {}
+                try { Start-Process -FilePath $browser -ArgumentList "`"$archIdx`"" } catch {}
             } else {
                 try { Start-Process $archIdx } catch {}
             }
@@ -3360,7 +3376,7 @@ if ($OpenArchive) {
     if (Test-Path $archIdx) {
         $browser = Get-DefaultBrowserExe
         if ($browser) {
-            try { Start-Process -FilePath $browser -ArgumentList $archIdx } catch {}
+            try { Start-Process -FilePath $browser -ArgumentList "`"$archIdx`"" } catch {}
         } else {
             try { Start-Process $archIdx } catch {}
         }
