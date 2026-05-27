@@ -4342,6 +4342,42 @@ function Install-WatchTask {
 }
 
 # =============================================================================
+# INSTALL META TASK — registers a Windows Scheduled Task that runs -MetaPipe
+# daily. Task name DossierMetaPipeDaily is distinct from DossierWatchlistDaily
+# and DossierMetaRefreshDaily (both registered by Install-WatchTask), so there
+# is no collision. Defaults to 07:00 when no -Time is supplied (matches the
+# documented -InstallMetaTask contract). Exit 62 if Register-ScheduledTask
+# fails — typically because the shell is not elevated.
+# =============================================================================
+function Install-MetaTask {
+    param(
+        [string]$TimeStr
+    )
+    if ([string]::IsNullOrWhiteSpace($TimeStr)) { $TimeStr = '07:00' }
+    if ($TimeStr -notmatch '^\d{2}:\d{2}$') {
+        Write-Host "-Time must be HH:mm (24h). Got: $TimeStr" -ForegroundColor Red
+        exit 1
+    }
+    $scriptPath = $PSCommandPath
+    if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+    $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -MetaPipe"
+    $action = New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument $argList
+    $trigger = New-ScheduledTaskTrigger -Daily -At $TimeStr
+    $taskName = 'DossierMetaPipeDaily'
+    try {
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Description "Daily dossier meta digest (scrape, diff, verify, synthesize)" -Force | Out-Null
+        Write-Host "Scheduled task '$taskName' registered. Runs daily at $TimeStr." -ForegroundColor Green
+        Write-Host "  Runs:    pwsh.exe -File `"$scriptPath`" -MetaPipe" -ForegroundColor DarkGray
+        Write-Host "  Inspect: Get-ScheduledTask -TaskName $taskName" -ForegroundColor DarkGray
+        Write-Host "  Remove:  Unregister-ScheduledTask -TaskName $taskName -Confirm:`$false" -ForegroundColor DarkGray
+    } catch {
+        Write-Host "Failed to register scheduled task '$taskName': $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "(May require running as admin.)" -ForegroundColor Yellow
+        exit 62
+    }
+}
+
+# =============================================================================
 # BATCH MODE (upgrade C)
 # =============================================================================
 function Invoke-BatchRun {
