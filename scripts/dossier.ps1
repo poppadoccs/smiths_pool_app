@@ -2222,6 +2222,143 @@ except urllib.error.HTTPError as e:
 }
 
 # =============================================================================
+# WAVE 3 — DAILY META ROUTINE
+# Functions: Invoke-MetaSourceFetch, Invoke-MetaItemExtract,
+#            Invoke-NativeMetaExtract, Invoke-MetaDelta, Invoke-MetaVerify,
+#            Invoke-MetaSynth, Invoke-NativeMetaSynth, Install-MetaTask
+# =============================================================================
+
+# =============================================================================
+# META SOURCE FETCH — fetches raw content from each source category IN PARALLEL.
+# Returns hashtable @{ reddit; hn; github; blogs } where each is @{ ok; text }.
+# Reddit and HN are unauthenticated public APIs. GitHub trending and blog feeds
+# use Firecrawl (require FIRECRAWL_API_KEY; skip gracefully if absent).
+# =============================================================================
+function Invoke-MetaSourceFetch {
+    param(
+        [string]$FirecrawlKey   # $env:FIRECRAWL_API_KEY passed in; jobs cannot see parent scope
+    )
+
+    $fcKey = $FirecrawlKey
+
+    # --- Reddit job (no auth required) ---
+    $jReddit = Start-Job -ScriptBlock {
+        param($key)
+        $subs = @('ClaudeAI', 'LocalLLaMA', 'MachineLearning', 'ChatGPTCoding', 'webdev', 'threejs')
+        $out = [System.Collections.Generic.List[string]]::new()
+        $headers = @{ 'User-Agent' = 'dossier-meta/1.0' }
+        foreach ($sub in $subs) {
+            try {
+                $uri = "https://www.reddit.com/r/$sub.json?limit=25"
+                $resp = Invoke-RestMethod -Uri $uri -Headers $headers -TimeoutSec 20 -ErrorAction Stop
+                $posts = $resp.data.children | ForEach-Object {
+                    $d = $_.data
+                    "r/$sub | score=$($d.score) | $($d.title) | $($d.url)"
+                }
+                $out.Add("## r/$sub`n" + ($posts -join "`n"))
+            } catch {
+                $out.Add("## r/$sub`n(fetch failed: $($_.Exception.Message))")
+            }
+        }
+        return @{ ok = ($out.Count -gt 0); text = ($out -join "`n`n") }
+    } -ArgumentList $fcKey
+
+    # --- HN job (Firebase API, no auth) ---
+    $jHN = Start-Job -ScriptBlock {
+        param($key)
+        try {
+            $ids = Invoke-RestMethod -Uri 'https://hacker-news.firebaseio.com/v0/topstories.json' -TimeoutSec 20 -ErrorAction Stop
+            $top30 = $ids | Select-Object -First 30
+            $items = [System.Collections.Generic.List[string]]::new()
+            foreach ($id in $top30) {
+                try {
+                    $item = Invoke-RestMethod -Uri "https://hacker-news.firebaseio.com/v0/item/$id.json" -TimeoutSec 10 -ErrorAction Stop
+                    if ($item.type -eq 'story' -and $item.title) {
+                        $url = if ($item.url) { $item.url } else { "https://news.ycombinator.com/item?id=$id" }
+                        $items.Add("- score=$($item.score) | $($item.title) | $url")
+                    }
+                } catch { continue }
+                if ($items.Count -ge 15) { break }  # cap to keep runtime bounded
+            }
+            return @{ ok = ($items.Count -gt 0); text = "## Hacker News Top Stories`n" + ($items -join "`n") }
+        } catch {
+            return @{ ok = $false; text = "## Hacker News`n(fetch failed: $($_.Exception.Message))" }
+        }
+    } -ArgumentList $fcKey
+
+    # --- GitHub trending job (HTML-only, requires Firecrawl) ---
+    $jGitHub = Start-Job -ScriptBlock {
+        param($fcKey)
+        if ([string]::IsNullOrWhiteSpace($fcKey)) {
+            return @{ ok = $false; text = "## GitHub Trending`n(skipped: FIRECRAWL_API_KEY not set)" }
+        }
+        $langs = @('typescript', 'python', 'javascript')
+        $out = [System.Collections.Generic.List[string]]::new()
+        $fcHeaders = @{ 'Authorization' = "Bearer $fcKey"; 'Content-Type' = 'application/json' }
+        foreach ($lang in $langs) {
+            try {
+                $fcBody = @{ url = "https://github.com/trending/$lang`?since=daily"; formats = @('markdown') } | ConvertTo-Json
+                $fcResp = Invoke-RestMethod -Uri 'https://api.firecrawl.dev/v1/scrape' -Method Post -Headers $fcHeaders -Body $fcBody -TimeoutSec 60 -ErrorAction Stop
+                if ($fcResp.data.markdown) {
+                    $md = $fcResp.data.markdown
+                    if ($md.Length -gt 3000) { $md = $md.Substring(0, 3000) + "`n[... truncated ...]" }
+                    $out.Add("## GitHub Trending ($lang)`n$md")
+                }
+            } catch {
+                $out.Add("## GitHub Trending ($lang)`n(fetch failed: $($_.Exception.Message))")
+            }
+        }
+        return @{ ok = ($out.Count -gt 0); text = ($out -join "`n`n") }
+    } -ArgumentList $fcKey
+
+    # --- Blog feeds job (requires Firecrawl) ---
+    $jBlogs = Start-Job -ScriptBlock {
+        param($fcKey)
+        if ([string]::IsNullOrWhiteSpace($fcKey)) {
+            return @{ ok = $false; text = "## Blog Feeds`n(skipped: FIRECRAWL_API_KEY not set)" }
+        }
+        $feeds = @(
+            @{ name = 'Anthropic News'; url = 'https://www.anthropic.com/news' },
+            @{ name = 'Vercel Blog';    url = 'https://vercel.com/blog' },
+            @{ name = 'OpenAI Blog';    url = 'https://openai.com/blog' }
+        )
+        $out = [System.Collections.Generic.List[string]]::new()
+        $fcHeaders = @{ 'Authorization' = "Bearer $fcKey"; 'Content-Type' = 'application/json' }
+        foreach ($feed in $feeds) {
+            try {
+                $fcBody = @{ url = $feed.url; formats = @('markdown') } | ConvertTo-Json
+                $fcResp = Invoke-RestMethod -Uri 'https://api.firecrawl.dev/v1/scrape' -Method Post -Headers $fcHeaders -Body $fcBody -TimeoutSec 60 -ErrorAction Stop
+                if ($fcResp.data.markdown) {
+                    $md = $fcResp.data.markdown
+                    if ($md.Length -gt 4000) { $md = $md.Substring(0, 4000) + "`n[... truncated ...]" }
+                    $out.Add("## $($feed.name)`n$md")
+                }
+            } catch {
+                $out.Add("## $($feed.name)`n(fetch failed: $($_.Exception.Message))")
+            }
+        }
+        return @{ ok = ($out.Count -gt 0); text = ($out -join "`n`n") }
+    } -ArgumentList $fcKey
+
+    Write-Host "  [meta-m1] Waiting for source fetches (reddit, HN, GitHub, blogs)..." -ForegroundColor DarkGray
+    Wait-Job -Job @($jReddit, $jHN, $jGitHub, $jBlogs) -Timeout 150 | Out-Null
+
+    $rReddit = try { Receive-Job $jReddit -ErrorAction SilentlyContinue } catch { @{ ok=$false; text='(receive error)' } }
+    $rHN     = try { Receive-Job $jHN -ErrorAction SilentlyContinue }     catch { @{ ok=$false; text='(receive error)' } }
+    $rGitHub = try { Receive-Job $jGitHub -ErrorAction SilentlyContinue } catch { @{ ok=$false; text='(receive error)' } }
+    $rBlogs  = try { Receive-Job $jBlogs -ErrorAction SilentlyContinue }  catch { @{ ok=$false; text='(receive error)' } }
+
+    Remove-Job -Job @($jReddit, $jHN, $jGitHub, $jBlogs) -Force -ErrorAction SilentlyContinue
+
+    return @{
+        reddit = if ($rReddit) { $rReddit } else { @{ ok=$false; text='(no output)' } }
+        hn     = if ($rHN)     { $rHN }     else { @{ ok=$false; text='(no output)' } }
+        github = if ($rGitHub) { $rGitHub } else { @{ ok=$false; text='(no output)' } }
+        blogs  = if ($rBlogs)  { $rBlogs }  else { @{ ok=$false; text='(no output)' } }
+    }
+}
+
+# =============================================================================
 # NATIVE RECIPE FALLBACK — calls Anthropic API directly (no claude CLI needed)
 # to synthesize RECIPE.md from whatever dossier sources exist.
 # Returns $true if RECIPE.md was produced, $false otherwise.
