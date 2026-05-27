@@ -1505,6 +1505,192 @@ Steps (do them in this exact order — do not skip):
 }
 
 # =============================================================================
+# VERIFY-POST V1 — CLAIMS EXTRACTION
+# Given a dossier folder, reads transcript.txt + BRIEF.md, calls claude CLI to
+# emit structured JSON enumerating all claims. Returns a hashtable:
+#   { ok=$true/false; claims=@{repos;libraries;mcp_servers;models;specific_claims}; claimsJson='...' }
+# =============================================================================
+function Invoke-VerifyPostClaims {
+    param(
+        [string]$DossierFolder,
+        [string]$TranscriptTxt,
+        [string]$BriefMd
+    )
+
+    $result = @{ ok = $false; claims = $null; claimsJson = '' }
+
+    # Build source text
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if ($TranscriptTxt -and (Test-Path $TranscriptTxt)) {
+        $raw = Get-Content $TranscriptTxt -Raw -Encoding utf8
+        if ($raw.Length -gt 12000) { $raw = $raw.Substring(0, 12000) + "`n[... truncated ...]" }
+        $parts.Add("## TRANSCRIPT`n$raw")
+    }
+    if ($BriefMd -and (Test-Path $BriefMd)) {
+        $brief = Get-Content $BriefMd -Raw -Encoding utf8
+        if ($brief.Length -gt 4000) { $brief = $brief.Substring(0, 4000) + "`n[... truncated ...]" }
+        $parts.Add("## BRIEF.md`n$brief")
+    }
+    if ($parts.Count -eq 0) {
+        Write-Warning "[verify-v1] No transcript or BRIEF.md found in $DossierFolder"
+        return $result
+    }
+
+    $sourcesText = $parts -join "`n`n---`n`n"
+
+    $prompt = @"
+You are analyzing a social-media post transcript to extract ALL technical claims made.
+The creator claims to have found/built/used specific tools, repos, libraries, models, or techniques.
+
+Extract every claim into this exact JSON structure (emit ONLY the JSON block, no prose before or after):
+
+``````json
+{
+  "repos": [
+    { "name": "<owner/repo or plain name>", "url": "<github url if mentioned>", "claim": "<what was claimed about it>" }
+  ],
+  "libraries": [
+    { "name": "<package name>", "ecosystem": "npm|pypi|cargo|other", "claim": "<what was claimed>" }
+  ],
+  "mcp_servers": [
+    { "name": "<server name>", "url": "<url if mentioned>", "claim": "<what was claimed>" }
+  ],
+  "models": [
+    { "name": "<model name>", "provider": "<provider if known>", "claim": "<what was claimed>" }
+  ],
+  "specific_claims": [
+    { "claim": "<any other specific verifiable claim not covered above>", "type": "feature|performance|pricing|availability|other" }
+  ]
+}
+``````
+
+Rules:
+- Include a claim even if you're not sure it's real. The next stage verifies.
+- If a category has no claims, use an empty array [].
+- Do not invent claims not in the source text.
+- One JSON block only, no commentary.
+
+SOURCE CONTENT:
+$sourcesText
+"@
+
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if ($claudeCmd) {
+        Write-Host "  [verify-v1] Extracting claims via claude CLI ..." -ForegroundColor DarkGray
+        $claimsLog = Join-Path $DossierFolder 'claude-verify-v1.log'
+        try {
+            $stdout = $prompt | & claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --add-dir $Script:VideoMemRoot 2>&1
+            Set-Content -Path $claimsLog -Value ($stdout | Out-String) -Encoding utf8
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "[verify-v1] claude CLI exited $LASTEXITCODE"
+                return $result
+            }
+        } catch {
+            Write-Warning "[verify-v1] claude CLI threw: $($_.Exception.Message)"
+            return $result
+        }
+    } else {
+        Write-Host "  [verify-v1] claude CLI not found; trying native fallback ..." -ForegroundColor DarkGray
+        $stdout = Invoke-NativeClaimsExtract -Prompt $prompt -DossierFolder $DossierFolder
+        if (-not $stdout) { return $result }
+    }
+
+    # Parse JSON from fenced block
+    $stdoutText = if ($stdout -is [array]) { $stdout -join "`n" } else { [string]$stdout }
+    $jsonMatch = [regex]::Match($stdoutText, '(?s)```json\s*(\{.*?\})\s*```')
+    if (-not $jsonMatch.Success) {
+        # Fallback: try bare JSON object
+        $jsonMatch = [regex]::Match($stdoutText, '(?s)(\{[^`]*"repos"[^`]*\})')
+    }
+    if (-not $jsonMatch.Success) {
+        Write-Warning "[verify-v1] Could not find JSON block in claims output"
+        return $result
+    }
+
+    $jsonStr = $jsonMatch.Groups[1].Value.Trim()
+    try {
+        $claims = $jsonStr | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-Warning "[verify-v1] Could not parse claims JSON: $($_.Exception.Message)"
+        return $result
+    }
+
+    $result.ok         = $true
+    $result.claims     = $claims
+    $result.claimsJson = $jsonStr
+    return $result
+}
+
+# =============================================================================
+# VERIFY-POST V1 NATIVE FALLBACK — calls Anthropic API directly when claude CLI
+# is absent. Returns stdout string or $null on failure.
+# =============================================================================
+function Invoke-NativeClaimsExtract {
+    param(
+        [string]$Prompt,
+        [string]$DossierFolder
+    )
+
+    if (-not $env:ANTHROPIC_API_KEY) {
+        Write-Host "       (ANTHROPIC_API_KEY not set; cannot run native claims extraction)" -ForegroundColor DarkGray
+        return $null
+    }
+    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pyCmd) {
+        Write-Host "       (python not on PATH; cannot run native claims extraction)" -ForegroundColor DarkGray
+        return $null
+    }
+
+    $pyScript = @'
+import sys, os, json, urllib.request, urllib.error
+
+api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+if not api_key:
+    print('[native-claims] ANTHROPIC_API_KEY not set', file=sys.stderr)
+    sys.exit(1)
+
+prompt_text = sys.stdin.read()
+payload = {
+    'model': 'claude-sonnet-4-6',
+    'max_tokens': 2048,
+    'messages': [{'role': 'user', 'content': prompt_text}]
+}
+data = json.dumps(payload).encode('utf-8')
+req = urllib.request.Request(
+    'https://api.anthropic.com/v1/messages',
+    data=data,
+    headers={
+        'x-api-key': api_key,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+    },
+    method='POST'
+)
+try:
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        body = json.loads(resp.read().decode('utf-8'))
+        print(body['content'][0]['text'])
+except urllib.error.HTTPError as e:
+    print(f'[native-claims] HTTP {e.code}: {e.read().decode()}', file=sys.stderr)
+    sys.exit(1)
+'@
+
+    $pyTempFile = Join-Path $env:TEMP "dossier-claims-$(Get-Random).py"
+    try {
+        Set-Content -Path $pyTempFile -Value $pyScript -Encoding utf8
+        $stdout = $Prompt | & python $pyTempFile 2>&1
+        if ($LASTEXITCODE -eq 0) { return ($stdout | Out-String) }
+        Write-Warning "[native-claims] python exited $LASTEXITCODE"
+        return $null
+    } catch {
+        Write-Warning "[native-claims] threw: $($_.Exception.Message)"
+        return $null
+    } finally {
+        if (Test-Path $pyTempFile) { Remove-Item $pyTempFile -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# =============================================================================
 # NATIVE RECIPE FALLBACK — calls Anthropic API directly (no claude CLI needed)
 # to synthesize RECIPE.md from whatever dossier sources exist.
 # Returns $true if RECIPE.md was produced, $false otherwise.
