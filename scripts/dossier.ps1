@@ -170,6 +170,19 @@ param(
     # to have been run first (signature needs 3+ dossiers to synthesize).
     [string]$EchoTest,
 
+    # Daily meta routine: scrape reddit, HN, GitHub trending, and blog feeds;
+    # diff vs yesterday; verify claims (reuses verify-post plumbing);
+    # synthesize a personalized "what changed today" digest at META-DAILY-<date>.md.
+    [switch]$MetaPipe,
+
+    # Helper subcommand: register a Windows Scheduled Task that runs -MetaPipe
+    # daily at the time given by -Time. Default 07:00.
+    [switch]$InstallMetaTask,
+
+    # Minimum novelty score (1-10) for an item to survive the MetaPipe filter.
+    # Default 5. Lower = more items, higher = stricter.
+    [int]$NoveltyMin = 5,
+
     [switch]$Help
 )
 
@@ -194,6 +207,11 @@ $ErrorActionPreference = 'Stop'
 #  50  -UpdateMeta failure: claude CLI missing, research streams empty, or
 #       synth validation failed (META.md not actually rewritten)
 #  52  FIRECRAWL_API_KEY missing or invalid at interactive prompt
+#  55  -VerifyPost: no transcript or BRIEF found in dossier folder (shortCode path)
+#  56  -VerifyPost: V1 claims extraction failed to produce parseable JSON
+#  60  -MetaPipe: claude CLI absent and ANTHROPIC_API_KEY not set
+#  61  -MetaPipe: all source fetches returned empty output
+#  62  -InstallMetaTask: Register-ScheduledTask failed (likely needs admin)
 # =============================================================================
 
 # =============================================================================
@@ -238,6 +256,12 @@ FLAGS:
                          ShortCode = finds existing dossier folder, skips re-download. Produces VERIFY.md.
   -EchoTest <user>       Mode: write a hypothetical post in <user>'s voice from their signature.
                          Self-validates signature quality. Requires -AnalyzeCreator first (3+ dossiers).
+  -MetaPipe              Mode: scrape AI/dev meta sources, diff vs yesterday, verify claims,
+                         synthesize META-DAILY-<date>.md. Requires FIRECRAWL_API_KEY for GitHub
+                         trending + blog feeds (reddit + HN work without it).
+  -InstallMetaTask       Helper: register Windows Scheduled Task for -MetaPipe daily.
+                         Use with -Time HH:mm (default 07:00).
+  -NoveltyMin <N>        Minimum novelty score (1-10) for MetaPipe items. Default 5.
   -Help             Print this help
 
 OPTIONAL ENVIRONMENT VARIABLES:
