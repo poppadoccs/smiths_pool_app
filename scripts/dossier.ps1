@@ -154,6 +154,10 @@ param(
     # Standalone mode: synthesize/refresh ARCHIVE/SIGNATURES/<user>.md for a specific creator
     [string]$AnalyzeCreator,
 
+    # Standalone mode: pipe all archive dossiers tagged with <tag> into a single
+    # technique-themed NotebookLM notebook (e.g. -TechniqueNotebook GSAP)
+    [string]$TechniqueNotebook,
+
     [switch]$Help
 )
 
@@ -3314,6 +3318,56 @@ if ($AnalyzeCreator) {
     } else {
         Write-Warning "Signature not produced. Likely <3 dossiers for @$cleanUser, or claude CLI missing."
     }
+    exit 0
+}
+
+# Mode 0b: -TechniqueNotebook <tag> — pipe all archive dossiers tagged with <tag>
+# into a single technique-themed NotebookLM notebook.
+if ($TechniqueNotebook) {
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if (-not $claudeCmd) {
+        Write-Error "claude CLI not on PATH. -TechniqueNotebook requires claude CLI for notebooklm-mcp."
+        exit 1
+    }
+    if (-not (Test-Path $Script:VideoMemRoot)) {
+        Write-Error "video-memory root not found at $Script:VideoMemRoot. Run at least one dossier first."
+        exit 1
+    }
+
+    Write-Host "Collecting dossiers tagged '$TechniqueNotebook' ..." -ForegroundColor DarkGray
+    $allDossiers = Get-ArchiveDossierData
+    $matching = $allDossiers | Where-Object { $_.Tags -contains $TechniqueNotebook }
+
+    if (-not $matching -or $matching.Count -eq 0) {
+        Write-Warning "No dossiers tagged '$TechniqueNotebook' found. Available tags from your archive:"
+        $available = ($allDossiers | ForEach-Object { $_.Tags } | Select-Object -Unique | Sort-Object) -join ', '
+        Write-Host "  $available" -ForegroundColor DarkGray
+        exit 1
+    }
+
+    Write-Host "Found $($matching.Count) dossier(s) tagged '$TechniqueNotebook'. Piping to NotebookLM ..." -ForegroundColor DarkGray
+    $notebookName = "Technique: $TechniqueNotebook"
+    $pipedCount = 0
+    $idx = 0
+    foreach ($d in $matching) {
+        $idx++
+        $briefPath      = Join-Path $d.Folder 'BRIEF.md'
+        $recipePath     = Join-Path $d.Folder 'RECIPE.md'
+        $transcriptPath = Join-Path $d.Folder 'transcript.txt'
+        Write-Host "  [$idx/$($matching.Count)] @$($d.Username) / $($d.ShortCode)" -ForegroundColor DarkGray
+        $r = Invoke-NotebookLMPipe `
+            -OutDir $d.Folder `
+            -OwnerUsername $d.Username `
+            -ShortCode $d.ShortCode `
+            -NotebookName $notebookName `
+            -AutoPodcast $AutoPodcast `
+            -BriefMd $briefPath `
+            -RecipeMd $recipePath `
+            -TranscriptTxt $transcriptPath
+        if ($r.ok) { $pipedCount++ }
+    }
+
+    Write-Host "TechniqueNotebook '$TechniqueNotebook' complete: $pipedCount/$($matching.Count) sources piped." -ForegroundColor Green
     exit 0
 }
 
