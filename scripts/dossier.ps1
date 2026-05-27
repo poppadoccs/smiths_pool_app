@@ -2359,6 +2359,155 @@ function Invoke-MetaSourceFetch {
 }
 
 # =============================================================================
+# META ITEM EXTRACT — sends each source's raw text to claude (one call per
+# category) with a structured-JSON extraction prompt. Returns flat list of
+# @{ category; title; url; summary; sourceClaim; novelty } filtered by NoveltyMin.
+# =============================================================================
+function Invoke-MetaItemExtract {
+    param(
+        [hashtable]$Sources,
+        [int]$NoveltyMin = 5
+    )
+
+    $allItems = [System.Collections.Generic.List[hashtable]]::new()
+    $today = Get-Date -Format 'yyyy-MM-dd'
+
+    $categories = @(
+        @{ name = 'reddit';  text = $Sources.reddit.text;  ok = $Sources.reddit.ok  },
+        @{ name = 'hn';      text = $Sources.hn.text;      ok = $Sources.hn.ok      },
+        @{ name = 'github';  text = $Sources.github.text;  ok = $Sources.github.ok  },
+        @{ name = 'blogs';   text = $Sources.blogs.text;   ok = $Sources.blogs.ok   }
+    )
+
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+
+    foreach ($cat in $categories) {
+        if (-not $cat.ok -or [string]::IsNullOrWhiteSpace($cat.text)) {
+            Write-Host "  [meta-m2] Skipping $($cat.name) - no content" -ForegroundColor DarkGray
+            continue
+        }
+
+        $extractPrompt = @"
+Today is $today. You are reading raw content scraped from a tech news source category: $($cat.name).
+
+Extract all notable items from the content below. For each item emit a JSON object in this exact array.
+Emit ONLY the JSON array - no preamble, no explanation, no markdown fencing.
+
+[
+  {
+    "category": "$($cat.name)",
+    "title": "<concise title>",
+    "url": "<best URL for the item>",
+    "summary": "<2-3 sentence summary of what it is and why it matters>",
+    "sourceClaim": "<verbatim excerpt or paraphrase from source>",
+    "novelty": <integer 1-10 where 10 = never-seen-before breakthrough>
+  }
+]
+
+Rules:
+- Include items that are genuinely new, surprising, or high-signal.
+- novelty score: rate harshly. Known tools no update = 1-3. Known tool with major new version = 6-8. Completely new thing = 9-10.
+- If a category has zero notable items, return an empty array: []
+- One JSON array only, no commentary.
+
+SOURCE CONTENT:
+$($cat.text)
+"@
+
+        $extractedJson = $null
+        if ($claudeCmd) {
+            try {
+                $raw = $extractPrompt | & claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --add-dir $Script:VideoMemRoot 2>&1
+                $extractedJson = $raw -join "`n"
+            } catch {
+                Write-Warning "[meta-m2] claude call failed for $($cat.name): $($_.Exception.Message)"
+                continue
+            }
+        } elseif ($env:ANTHROPIC_API_KEY) {
+            $extractedJson = Invoke-NativeMetaExtract -Prompt $extractPrompt
+        } else {
+            Write-Warning "[meta-m2] claude CLI absent and no ANTHROPIC_API_KEY; cannot extract $($cat.name)"
+            continue
+        }
+
+        if ([string]::IsNullOrWhiteSpace($extractedJson)) { continue }
+
+        # Parse the JSON array. Strip any accidental markdown fencing first.
+        try {
+            $cleaned = $extractedJson -replace '(?s)```json\s*', '' -replace '(?s)```\s*', ''
+            $parsed = $cleaned | ConvertFrom-Json -ErrorAction Stop
+            if ($parsed -isnot [array]) { $parsed = @($parsed) }
+            foreach ($item in $parsed) {
+                if ($item.novelty -ge $NoveltyMin) {
+                    $allItems.Add(@{
+                        category    = [string]$item.category
+                        title       = [string]$item.title
+                        url         = [string]$item.url
+                        summary     = [string]$item.summary
+                        sourceClaim = [string]$item.sourceClaim
+                        novelty     = [int]$item.novelty
+                    })
+                }
+            }
+        } catch {
+            Write-Warning "[meta-m2] JSON parse failed for $($cat.name): $($_.Exception.Message)"
+        }
+    }
+
+    Write-Host "  [meta-m2] Extracted $($allItems.Count) items with novelty >= $NoveltyMin" -ForegroundColor DarkGray
+    return ,$allItems   # comma prevents PS from unwrapping single-element array
+}
+
+# =============================================================================
+# META ITEM EXTRACT NATIVE FALLBACK — Anthropic API direct call when claude
+# CLI is absent. Returns raw model text or $null on failure.
+# =============================================================================
+function Invoke-NativeMetaExtract {
+    param([string]$Prompt)
+
+    if (-not $env:ANTHROPIC_API_KEY) { return $null }
+    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pyCmd) { return $null }
+
+    $pyScript = @'
+import sys, os, json, urllib.request, urllib.error
+api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+if not api_key:
+    sys.exit(1)
+prompt_text = sys.stdin.read()
+payload = {
+    'model': 'claude-sonnet-4-6',
+    'max_tokens': 4096,
+    'messages': [{'role': 'user', 'content': prompt_text}]
+}
+data = json.dumps(payload).encode('utf-8')
+req = urllib.request.Request(
+    'https://api.anthropic.com/v1/messages', data=data,
+    headers={'x-api-key': api_key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
+    method='POST'
+)
+try:
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        body = json.loads(resp.read().decode('utf-8'))
+        print(body['content'][0]['text'])
+except urllib.error.HTTPError as e:
+    print(f'[native-extract] HTTP {e.code}', file=sys.stderr); sys.exit(1)
+'@
+
+    $pyTempFile = Join-Path $env:TEMP "dossier-meta-extract-$(Get-Random).py"
+    try {
+        Set-Content -Path $pyTempFile -Value $pyScript -Encoding utf8
+        $out = $Prompt | & python $pyTempFile 2>&1
+        if ($LASTEXITCODE -eq 0) { return ($out -join "`n") }
+        return $null
+    } catch {
+        return $null
+    } finally {
+        if (Test-Path $pyTempFile) { Remove-Item $pyTempFile -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# =============================================================================
 # NATIVE RECIPE FALLBACK — calls Anthropic API directly (no claude CLI needed)
 # to synthesize RECIPE.md from whatever dossier sources exist.
 # Returns $true if RECIPE.md was produced, $false otherwise.
