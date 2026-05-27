@@ -3026,15 +3026,22 @@ Do NOT include preamble - start with the heading.
                             }
                             $buildsOnRefs = @($buildsOnRefs | Select-Object -Unique)
                         }
-                        if ($buildsOnRefs.Count -gt 0) {
-                            $mfPath = Join-Path $outDir 'manifest.json'
-                            if (Test-Path $mfPath) {
-                                $mfObj = Get-Content $mfPath -Raw -Encoding utf8 | ConvertFrom-Json
-                                $mfBuild = [ordered]@{}
-                                foreach ($prop in $mfObj.PSObject.Properties) { $mfBuild[$prop.Name] = $prop.Value }
-                                $mfBuild['builds_on'] = $buildsOnRefs
-                                $mfBuild | ConvertTo-Json -Depth 6 | Set-Content -Path $mfPath -Encoding utf8
+                        # Always write builds_on (even empty array) so a re-run
+                        # that drops the ## Builds On section clears the stale
+                        # lineage instead of preserving it forever.
+                        # Codex Wave 4 review caught the prior write-only-when-nonzero
+                        # pattern leaving stale entries in manifest.json.
+                        $mfPath = Join-Path $outDir 'manifest.json'
+                        if (Test-Path $mfPath) {
+                            $mfObj = Get-Content $mfPath -Raw -Encoding utf8 | ConvertFrom-Json
+                            $mfBuild = [ordered]@{}
+                            foreach ($prop in $mfObj.PSObject.Properties) { $mfBuild[$prop.Name] = $prop.Value }
+                            $mfBuild['builds_on'] = $buildsOnRefs
+                            $mfBuild | ConvertTo-Json -Depth 6 | Set-Content -Path $mfPath -Encoding utf8
+                            if ($buildsOnRefs.Count -gt 0) {
                                 Write-Host "       builds_on: $($buildsOnRefs -join ', ')" -ForegroundColor DarkGray
+                            } else {
+                                Write-Host "       builds_on: (none - cleared any stale lineage)" -ForegroundColor DarkGray
                             }
                         }
                     } catch {
@@ -4329,14 +4336,18 @@ _Hypothetical post generated from signature. Not for publishing._
         exit 0
     }
 
-    # Defensive stdout fallback: only save if it looks like real markdown
-    # (starts with "# Echo - @"). Guards against saving stderr/help output
-    # into echo.md when 2>&1 captures both streams.
+    # Defensive stdout fallback: find the markdown header position and slice
+    # the captured text from there forward, dropping any ANSI/stderr noise
+    # that may have preceded it (since 2>&1 captures both streams).
+    # The original regex (?m)^# Echo matched a header on ANY line, which
+    # would save polluted streams. Codex Wave 4 review caught this.
     $stdoutText = if ($stdout -is [array]) { $stdout -join "`n" } else { [string]$stdout }
-    if ($stdoutText -match '(?m)^# Echo\s*-\s*@' -and $stdoutText.Length -gt 200) {
-        $stdoutText | Set-Content -Path $echoPath -Encoding utf8
+    $headerMatch = [regex]::Match($stdoutText, '(?m)^# Echo\s*-\s*@')
+    if ($headerMatch.Success -and ($stdoutText.Length - $headerMatch.Index) -gt 200) {
+        $markdownOnly = $stdoutText.Substring($headerMatch.Index)
+        $markdownOnly | Set-Content -Path $echoPath -Encoding utf8
         if ((Test-Path $echoPath) -and ((Get-Item $echoPath).Length -gt 200)) {
-            Write-Host "Echo written (from stdout fallback): $echoPath" -ForegroundColor Green
+            Write-Host "Echo written (from stdout fallback, sliced from markdown header): $echoPath" -ForegroundColor Green
             exit 0
         }
     }
