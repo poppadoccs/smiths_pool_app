@@ -2543,6 +2543,75 @@ function Invoke-MetaDelta {
 }
 
 # =============================================================================
+# META VERIFY — builds a synthetic Claims object from meta items and calls
+# Wave 2's Invoke-VerifyPostCheck. Returns the verification results array.
+# Classifies items by URL pattern: github -> repos, npm/pypi -> libraries,
+# mcp keyword -> mcp_servers, model-name pattern -> models, else best-effort repo.
+# =============================================================================
+function Invoke-MetaVerify {
+    param(
+        [System.Collections.Generic.List[hashtable]]$Items
+    )
+
+    if ($Items.Count -eq 0) {
+        return @{ results = @() }
+    }
+
+    $repos      = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $libraries  = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $mcpServers = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $models     = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+    foreach ($item in $Items) {
+        $url   = $item.url
+        $title = $item.title
+        $claim = $item.summary
+
+        if ($url -match 'github\.com/[^/]+/[^/]+') {
+            $slug = [regex]::Match($url, 'github\.com/([^/?#]+/[^/?#]+)').Groups[1].Value -replace '\.git$', ''
+            $repos.Add([PSCustomObject]@{ name = $slug; url = $url; claim = $claim })
+        } elseif ($url -match 'npmjs\.com/package/') {
+            $pkgName = [regex]::Match($url, 'npmjs\.com/package/([^/?#]+)').Groups[1].Value
+            $libraries.Add([PSCustomObject]@{ name = $pkgName; ecosystem = 'npm'; claim = $claim })
+        } elseif ($url -match 'pypi\.org/project/') {
+            $pkgName = [regex]::Match($url, 'pypi\.org/project/([^/?#]+)').Groups[1].Value
+            $libraries.Add([PSCustomObject]@{ name = $pkgName; ecosystem = 'pypi'; claim = $claim })
+        } elseif (($title -match 'mcp|model.?context.?protocol') -or ($url -match 'mcp')) {
+            $mcpServers.Add([PSCustomObject]@{ name = $title; url = $url; claim = $claim })
+        } elseif ($title -match 'claude|gpt|gemini|llama|mistral|sonnet|haiku|opus' -and $title.Length -lt 80) {
+            $provider = switch -Regex ($title) {
+                'claude|anthropic'   { 'Anthropic'; break }
+                'gpt|openai'         { 'OpenAI'; break }
+                'gemini|google'      { 'Google'; break }
+                default              { 'unknown' }
+            }
+            $models.Add([PSCustomObject]@{ name = $title; provider = $provider; claim = $claim })
+        } elseif ($title -match '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+            # Bare owner/repo style title — treat as github slug
+            $repos.Add([PSCustomObject]@{ name = $title; url = $url; claim = $claim })
+        } else {
+            Write-Host "  [meta-m4] Unclassifiable item skipped: $title" -ForegroundColor DarkGray
+        }
+    }
+
+    $claims = [PSCustomObject]@{
+        repos       = $repos.ToArray()
+        libraries   = $libraries.ToArray()
+        mcp_servers = $mcpServers.ToArray()
+        models      = $models.ToArray()
+    }
+
+    $total = $repos.Count + $libraries.Count + $mcpServers.Count + $models.Count
+    if ($total -eq 0) {
+        Write-Host "  [meta-m4] No classifiable items to verify." -ForegroundColor DarkGray
+        return @{ results = @() }
+    }
+
+    Write-Host "  [meta-m4] Verifying $total classified item(s) via Invoke-VerifyPostCheck ..." -ForegroundColor DarkGray
+    return Invoke-VerifyPostCheck -Claims $claims
+}
+
+# =============================================================================
 # NATIVE RECIPE FALLBACK — calls Anthropic API directly (no claude CLI needed)
 # to synthesize RECIPE.md from whatever dossier sources exist.
 # Returns $true if RECIPE.md was produced, $false otherwise.
