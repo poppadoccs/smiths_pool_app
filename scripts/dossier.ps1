@@ -158,6 +158,11 @@ param(
     # technique-themed NotebookLM notebook (e.g. -TechniqueNotebook GSAP)
     [string]$TechniqueNotebook,
 
+    # Verify mode: extract claims from a post transcript and verify them.
+    # Pass a full URL (runs full pipeline then verifies) or a shortCode
+    # (finds existing dossier folder and verifies without re-download).
+    [string]$VerifyPost,
+
     [switch]$Help
 )
 
@@ -222,6 +227,8 @@ FLAGS:
   -UpdateMeta            Mode: refresh META.md with current AI/stack/workflow research
   -ShowMeta              Mode: print current META.md to stdout
   -FirecrawlPortfolio    Also Firecrawl-scrape the externalUrl after tour (saves PORTFOLIO-CONTENT.md)
+  -VerifyPost <url|code> Mode: extract + verify claims from a post. URL = full pipeline + verify.
+                         ShortCode = finds existing dossier folder, skips re-download. Produces VERIFY.md.
   -Help             Print this help
 
 OPTIONAL ENVIRONMENT VARIABLES:
