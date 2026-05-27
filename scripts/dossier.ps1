@@ -1082,6 +1082,38 @@ function Build-ArchiveIndex {
     }
     $rowsHtml = $rowsSb.ToString()
 
+    # ---------- Untagged dossier audit ----------
+    # Surface dossiers where the 17-pattern regex extracted ZERO technique tags.
+    # These are either tag-vocabulary gaps (creator uses something we don't pattern)
+    # or weak recipes (claude didn't surface enough stack-tags). Either way: action item.
+    $untaggedItems = $data | Where-Object { -not $_.Tags -or @($_.Tags).Count -eq 0 }
+    $untaggedCount = @($untaggedItems).Count
+    $auditSection = ''
+    if ($untaggedCount -gt 0) {
+        $auditSb = [System.Text.StringBuilder]::new()
+        foreach ($u in ($untaggedItems | Sort-Object -Property PostedAt -Descending)) {
+            $uUrl  = Format-FileUrl $u.Folder
+            $uUser = Format-HtmlEscape $u.Username
+            $uCode = Format-HtmlEscape $u.ShortCode
+            [void]$auditSb.AppendFormat(
+                '<a class="audit-row" href="{0}"><span class="audit-user">@{1}</span><span class="audit-code">{2}</span></a>',
+                $uUrl, $uUser, $uCode
+            )
+        }
+        $auditRowsHtml = $auditSb.ToString()
+        $auditSection = @"
+    <section aria-label="Untagged dossiers">
+      <div class="section-head">
+        <h2>Untagged audit</h2>
+        <span class="meta">$untaggedCount post$(if ($untaggedCount -eq 1) { '' } else { 's' }) with zero detected technique tags</span>
+      </div>
+      <div class="audit-section">
+        <div class="audit-list">$auditRowsHtml</div>
+      </div>
+    </section>
+"@
+    }
+
     # ---------- Footer ----------
     $fromClaudeUrl = Format-FileUrl $fromClaudePath
     $fromClaudeExists = Test-Path $fromClaudePath
@@ -1183,6 +1215,14 @@ function Build-ArchiveIndex {
   /* HIDDEN BY FILTER */
   .is-hidden { display:none !important; }
 
+  /* UNTAGGED AUDIT */
+  .audit-section { padding: 1.25rem 1.5rem; border:1px solid var(--border); border-radius:6px; background:#0d0d0d; }
+  .audit-list { display:flex; flex-direction:column; gap:.4rem; }
+  .audit-row { display:flex; gap:1rem; padding:.5rem .75rem; border-radius:4px; background:#101212; font-family:var(--mono); font-size:.78rem; transition:background-color 150ms ease, color 150ms ease; }
+  .audit-row:hover { background:#162018; color:var(--accent); }
+  .audit-user { color:var(--accent); font-weight:600; }
+  .audit-code { color:var(--dim); }
+
   /* FOOTER */
   footer { margin-top:3.5rem; padding-top:1.5rem; border-top:1px solid var(--border); font-family:var(--mono); font-size:.72rem; color:var(--dim); display:flex; flex-direction:column; gap:.4rem; }
   footer a { color:var(--accent); }
@@ -1223,6 +1263,8 @@ function Build-ArchiveIndex {
         $rowsHtml
       </div>
     </section>
+
+$auditSection
 
     <footer>
       <div>DOSSIER v3.1 &middot; auto-regenerated each run</div>
