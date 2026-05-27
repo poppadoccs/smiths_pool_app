@@ -3312,6 +3312,10 @@ if ($Watch) {
     if (-not (Test-Path $Script:VideoMemRoot)) { New-Item -ItemType Directory -Force -Path $Script:VideoMemRoot | Out-Null }
     $whisper = Get-WhisperBackend
     if ($whisper.Backend) { Write-Host "Whisper backend: $($whisper.Backend)" -ForegroundColor DarkGray }
+    if ($whisper.Backend -eq 'whisper.cpp' -and -not $env:WHISPER_MODEL) {
+        Write-Warning "whisper.cpp backend selected but `$env:WHISPER_MODEL is not set. Transcription will be skipped at runtime."
+        Write-Host "  Set with: `$env:WHISPER_MODEL = 'C:\path\to\model.bin'" -ForegroundColor DarkGray
+    }
     Invoke-WatchlistRun -WatchInput $Watch -Whisper $whisper `
         -DoTour:(-not $NoTour) -DoRecipe:(-not $NoRecipe) -ForceFlag:$Force `
         -DoNotebookLM:(-not $NoNotebookLM) -NotebookName $Notebook -AutoPodcast:$AutoPodcast `
@@ -3348,6 +3352,10 @@ if (-not (Test-Path $Script:VideoMemRoot)) { New-Item -ItemType Directory -Force
 if ((Test-Path $Url) -and ($Url -match '\.txt$')) {
     $whisper = Get-WhisperBackend
     if ($whisper.Backend) { Write-Host "Whisper backend: $($whisper.Backend)" -ForegroundColor DarkGray }
+    if ($whisper.Backend -eq 'whisper.cpp' -and -not $env:WHISPER_MODEL) {
+        Write-Warning "whisper.cpp backend selected but `$env:WHISPER_MODEL is not set. Transcription will be skipped at runtime."
+        Write-Host "  Set with: `$env:WHISPER_MODEL = 'C:\path\to\model.bin'" -ForegroundColor DarkGray
+    }
     Invoke-BatchRun -ListFile $Url -Whisper $whisper `
         -DoTour:(-not $NoTour) -DoRecipe:(-not $NoRecipe) -ForceFlag:$Force -MaxJobs $MaxParallel `
         -DoNotebookLM:(-not $NoNotebookLM) -NotebookName $Notebook -AutoPodcast:$AutoPodcast `
@@ -3370,6 +3378,10 @@ if ((Test-Path $Url) -and ($Url -match '\.txt$')) {
 $whisper = Get-WhisperBackend
 if ($whisper.Backend) {
     Write-Host "Whisper backend detected: $($whisper.Backend)" -ForegroundColor DarkGray
+    if ($whisper.Backend -eq 'whisper.cpp' -and -not $env:WHISPER_MODEL) {
+        Write-Warning "whisper.cpp backend selected but `$env:WHISPER_MODEL is not set. Transcription will be skipped at runtime."
+        Write-Host "  Set with: `$env:WHISPER_MODEL = 'C:\path\to\model.bin'" -ForegroundColor DarkGray
+    }
 } else {
     Write-Host "Whisper not installed - transcription will be skipped." -ForegroundColor DarkGray
     Write-Host "  Install one of: pip install faster-whisper / pip install openai-whisper / whisper.cpp" -ForegroundColor DarkGray
