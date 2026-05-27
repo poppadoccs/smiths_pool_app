@@ -1691,6 +1691,189 @@ except urllib.error.HTTPError as e:
 }
 
 # =============================================================================
+# VERIFY-POST V2 — PER-CLAIM VERIFICATION ORCHESTRATOR
+# Takes the claims hashtable from V1. Runs parallel Start-Job checks: GitHub
+# repo existence/stars/last-push, npm/pypi package version, HuggingFace model
+# lookup. Returns @{ results = @(...) } where each item has:
+#   { type; name; originalClaim; found; stars; lastPush; latestVersion;
+#     deprecated; readmeSummary; notes }
+# =============================================================================
+function Invoke-VerifyPostCheck {
+    param(
+        [PSCustomObject]$Claims    # output of Invoke-VerifyPostClaims .claims
+    )
+
+    $checkItems = [System.Collections.Generic.List[hashtable]]::new()
+
+    # Flatten all claims into a single list of check items.
+    # Plain hashtables (not PSCustomObjects) so Start-Job CLIXML serialization is clean.
+    foreach ($r in $Claims.repos) {
+        $checkItems.Add(@{ type='repo'; name=$r.name; url=$r.url; originalClaim=$r.claim })
+    }
+    foreach ($l in $Claims.libraries) {
+        $checkItems.Add(@{ type='library'; name=$l.name; ecosystem=$l.ecosystem; originalClaim=$l.claim })
+    }
+    foreach ($m in $Claims.mcp_servers) {
+        $checkItems.Add(@{ type='mcp_server'; name=$m.name; url=$m.url; originalClaim=$m.claim })
+    }
+    foreach ($mo in $Claims.models) {
+        $checkItems.Add(@{ type='model'; name=$mo.name; provider=$mo.provider; originalClaim=$mo.claim })
+    }
+
+    if ($checkItems.Count -eq 0) {
+        return @{ results = @() }
+    }
+
+    Write-Host "  [verify-v2] Checking $($checkItems.Count) claim(s) in parallel ..." -ForegroundColor DarkGray
+
+    # Spawn one Start-Job per claim item
+    $jobs = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($item in $checkItems) {
+        $j = Start-Job -ArgumentList $item -ScriptBlock {
+            param($ci)
+            $out = @{
+                type          = $ci.type
+                name          = $ci.name
+                originalClaim = $ci.originalClaim
+                found         = $false
+                stars         = $null
+                lastPush      = $null
+                latestVersion = $null
+                deprecated    = $null
+                readmeSummary = ''
+                notes         = ''
+            }
+
+            $ghToken = $env:GITHUB_TOKEN
+            $ghHeaders = if ($ghToken) {
+                @{ Authorization = "Bearer $ghToken"; 'User-Agent' = 'dossier-verify/1.0' }
+            } else {
+                @{ 'User-Agent' = 'dossier-verify/1.0' }
+            }
+
+            try {
+                switch ($ci.type) {
+                    'repo' {
+                        # Try to extract owner/repo from name or url
+                        $repoSlug = $null
+                        if ($ci.url -match 'github\.com/([^/?#]+/[^/?#]+)') {
+                            $repoSlug = $Matches[1] -replace '\.git$',''
+                        } elseif ($ci.name -match '^[^/]+/[^/]+$') {
+                            $repoSlug = $ci.name
+                        }
+                        if ($repoSlug) {
+                            $apiUrl = "https://api.github.com/repos/$repoSlug"
+                            $resp = Invoke-RestMethod -Uri $apiUrl -Headers $ghHeaders -TimeoutSec 15 -ErrorAction Stop
+                            $out.found    = $true
+                            $out.stars    = $resp.stargazers_count
+                            $out.lastPush = $resp.pushed_at
+                            $out.notes    = "Repo exists. Stars: $($resp.stargazers_count). Last push: $($resp.pushed_at). Description: $($resp.description)"
+                        } else {
+                            $out.notes = "Could not parse a github.com/owner/repo slug from name='$($ci.name)' url='$($ci.url)'"
+                        }
+                    }
+                    'library' {
+                        switch ($ci.ecosystem) {
+                            'npm' {
+                                $resp = Invoke-RestMethod -Uri "https://registry.npmjs.org/$($ci.name)/latest" -TimeoutSec 15 -ErrorAction Stop
+                                $out.found         = $true
+                                $out.latestVersion = $resp.version
+                                $out.deprecated    = [bool]$resp.deprecated
+                                $out.notes         = "npm: v$($resp.version). Deprecated: $($out.deprecated)."
+                            }
+                            'pypi' {
+                                $resp = Invoke-RestMethod -Uri "https://pypi.org/pypi/$($ci.name)/json" -TimeoutSec 15 -ErrorAction Stop
+                                $out.found         = $true
+                                $out.latestVersion = $resp.info.version
+                                $out.deprecated    = ($resp.info.classifiers -contains 'Development Status :: 7 - Inactive')
+                                $out.notes         = "PyPI: v$($resp.info.version). Deprecated: $($out.deprecated)."
+                            }
+                            default {
+                                # Try npm first as the most common ecosystem
+                                try {
+                                    $resp = Invoke-RestMethod -Uri "https://registry.npmjs.org/$($ci.name)/latest" -TimeoutSec 10 -ErrorAction Stop
+                                    $out.found         = $true
+                                    $out.latestVersion = $resp.version
+                                    $out.deprecated    = [bool]$resp.deprecated
+                                    $out.notes         = "npm (ecosystem unknown, tried npm): v$($resp.version)."
+                                } catch {
+                                    $out.notes = "ecosystem='$($ci.ecosystem)' - no automated check. Verify manually."
+                                }
+                            }
+                        }
+                    }
+                    'mcp_server' {
+                        # MCP servers: try GitHub slug parse first
+                        $repoSlug = $null
+                        if ($ci.url -match 'github\.com/([^/?#]+/[^/?#]+)') {
+                            $repoSlug = $Matches[1] -replace '\.git$',''
+                        }
+                        if ($repoSlug) {
+                            try {
+                                $resp = Invoke-RestMethod -Uri "https://api.github.com/repos/$repoSlug" -Headers $ghHeaders -TimeoutSec 15 -ErrorAction Stop
+                                $out.found    = $true
+                                $out.stars    = $resp.stargazers_count
+                                $out.lastPush = $resp.pushed_at
+                                $out.notes    = "GitHub MCP: $repoSlug - stars=$($resp.stargazers_count), last push=$($resp.pushed_at)"
+                            } catch {
+                                $out.notes = "GitHub lookup failed for $repoSlug : $_"
+                            }
+                        } else {
+                            $out.notes = "No GitHub URL found for MCP server '$($ci.name)'. Verify manually."
+                        }
+                    }
+                    'model' {
+                        # HuggingFace check for open models; for proprietary (OpenAI/Anthropic/Google) just note
+                        $knownProviders = @('openai','anthropic','google','meta','mistral','cohere')
+                        $provLower = if ($ci.provider) { $ci.provider.ToLower() } else { '' }
+                        $isProprietary = $false
+                        foreach ($p in $knownProviders) { if ($provLower -match $p) { $isProprietary = $true; break } }
+                        if ($isProprietary) {
+                            $out.notes = "Proprietary model ($($ci.provider) / $($ci.name)) - cannot programmatically verify; check provider docs."
+                            $out.found = $true  # assume known-provider models exist as claimed
+                        } else {
+                            # Try HuggingFace
+                            $hfName = $ci.name -replace '\s+', '-'
+                            try {
+                                $resp = Invoke-RestMethod -Uri "https://huggingface.co/api/models/$hfName" -TimeoutSec 15 -ErrorAction Stop
+                                $out.found = $true
+                                $out.notes = "HuggingFace: $($resp.modelId) - downloads=$($resp.downloads), likes=$($resp.likes)"
+                            } catch {
+                                $out.notes = "HuggingFace lookup failed for '$hfName': $_"
+                            }
+                        }
+                    }
+                }
+            } catch {
+                $out.notes = "Check threw: $_"
+            }
+            return $out
+        }
+        $jobs.Add(@{ job = $j; item = $item })
+    }
+
+    Wait-Job -Job ($jobs | ForEach-Object { $_.job }) | Out-Null
+
+    $results = [System.Collections.Generic.List[hashtable]]::new()
+    foreach ($jh in $jobs) {
+        try {
+            $r = Receive-Job -Job $jh.job -ErrorAction SilentlyContinue
+            if ($r) {
+                $results.Add($r)
+            } else {
+                $results.Add(@{ type=$jh.item.type; name=$jh.item.name; found=$false; notes='Job returned no output' })
+            }
+        } catch {
+            $results.Add(@{ type=$jh.item.type; name=$jh.item.name; found=$false; notes="Receive-Job threw: $_" })
+        } finally {
+            Remove-Job -Job $jh.job -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    return @{ results = $results }
+}
+
+# =============================================================================
 # NATIVE RECIPE FALLBACK — calls Anthropic API directly (no claude CLI needed)
 # to synthesize RECIPE.md from whatever dossier sources exist.
 # Returns $true if RECIPE.md was produced, $false otherwise.
