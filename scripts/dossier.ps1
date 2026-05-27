@@ -163,6 +163,13 @@ param(
     # (finds existing dossier folder and verifies without re-download).
     [string]$VerifyPost,
 
+    # Echo test: write a hypothetical post in this creator's voice using
+    # only their signature (ARCHIVE/SIGNATURES/<user>.md) as input.
+    # Self-validates signature quality - vivid output = signature has
+    # texture; generic output = signature has gaps. Requires -AnalyzeCreator
+    # to have been run first (signature needs 3+ dossiers to synthesize).
+    [string]$EchoTest,
+
     [switch]$Help
 )
 
@@ -229,6 +236,8 @@ FLAGS:
   -FirecrawlPortfolio    Also Firecrawl-scrape the externalUrl after tour (saves PORTFOLIO-CONTENT.md)
   -VerifyPost <url|code> Mode: extract + verify claims from a post. URL = full pipeline + verify.
                          ShortCode = finds existing dossier folder, skips re-download. Produces VERIFY.md.
+  -EchoTest <user>       Mode: write a hypothetical post in <user>'s voice from their signature.
+                         Self-validates signature quality. Requires -AnalyzeCreator first (3+ dossiers).
   -Help             Print this help
 
 OPTIONAL ENVIRONMENT VARIABLES:
@@ -4126,6 +4135,107 @@ if ($VerifyPost) {
     }
 
     exit 0
+}
+
+# Mode 0d: -EchoTest <username> — write a hypothetical post in this creator's voice
+if ($EchoTest) {
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if (-not $claudeCmd) {
+        Write-Error "claude CLI not on PATH. -EchoTest requires claude CLI."
+        exit 1
+    }
+    if (-not (Test-Path $Script:VideoMemRoot)) {
+        Write-Error "video-memory root not found at $Script:VideoMemRoot. Run at least one dossier first."
+        exit 1
+    }
+    $cleanUser = $EchoTest -replace '^@',''
+    $sigPath = Join-Path $Script:VideoMemRoot "ARCHIVE\SIGNATURES\$cleanUser.md"
+    if (-not (Test-Path $sigPath)) {
+        Write-Error "No signature found for @$cleanUser at $sigPath. Run -AnalyzeCreator $cleanUser first (requires 3+ dossiers)."
+        exit 1
+    }
+    $echoPath = Join-Path $Script:VideoMemRoot "ARCHIVE\SIGNATURES\$cleanUser.echo.md"
+    $echoLog  = Join-Path $Script:VideoMemRoot "ARCHIVE\SIGNATURES\$cleanUser.echo.log"
+
+    $echoPrompt = @"
+You have been given the creator signature for @$cleanUser, which describes their
+consistent patterns, evolution trajectory, distinctive voice, and notable absences.
+The signature file is at: $sigPath
+Read it via your --add-dir access.
+
+Your task: write ONE hypothetical NEW post in @$cleanUser's voice - the kind of
+thing they would actually publish next. This is a self-validation exercise to test
+whether the signature has enough texture to generate something specific and
+recognizable in their voice.
+
+Requirements:
+- Match their tone, sentence rhythm, vocabulary, and any recurring structural
+  moves described in the signature.
+- Below the caption, write a 2-3 sentence "build brief" describing what the
+  visuals or video would look like (stack, motion style, mood).
+- If the signature described gaps or absences, do NOT fill them in - write
+  around them, the way the actual creator would.
+- Do NOT produce a generic creator post. If you cannot produce something that
+  feels specific to @$cleanUser, say so explicitly and explain which signature
+  sections lacked enough texture.
+
+Write the output to $echoPath with this exact structure:
+
+# Echo - @$cleanUser
+_Hypothetical post generated from signature. Not for publishing._
+
+## Simulated caption
+
+[the caption here]
+
+## Build brief
+
+[the visual/technical brief here]
+
+## Fidelity notes
+
+[1-3 sentences: how confident are you this matches their voice? Which
+ signature sections drove this? Which felt thin?]
+"@
+
+    Write-Host "Generating echo for @$cleanUser ..." -ForegroundColor DarkGray
+    Write-Host "  Signature: $sigPath" -ForegroundColor DarkGray
+    Write-Host "  Output:    $echoPath" -ForegroundColor DarkGray
+
+    $stdout = $null
+    try {
+        $stdout = $echoPrompt | & claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --add-dir $Script:VideoMemRoot 2>&1
+        Set-Content -Path $echoLog -Value ($stdout | Out-String) -Encoding utf8
+    } catch {
+        Write-Error "Echo test failed: $($_.Exception.Message)"
+        exit 1
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "claude CLI exited $LASTEXITCODE. See $echoLog"
+        exit 1
+    }
+
+    # Primary path: claude wrote echo.md directly via its file-write capability
+    if ((Test-Path $echoPath) -and ((Get-Item $echoPath).Length -gt 200)) {
+        Write-Host "Echo written: $echoPath" -ForegroundColor Green
+        exit 0
+    }
+
+    # Defensive stdout fallback: only save if it looks like real markdown
+    # (starts with "# Echo - @"). Guards against saving stderr/help output
+    # into echo.md when 2>&1 captures both streams.
+    $stdoutText = if ($stdout -is [array]) { $stdout -join "`n" } else { [string]$stdout }
+    if ($stdoutText -match '(?m)^# Echo\s*-\s*@' -and $stdoutText.Length -gt 200) {
+        $stdoutText | Set-Content -Path $echoPath -Encoding utf8
+        if ((Test-Path $echoPath) -and ((Get-Item $echoPath).Length -gt 200)) {
+            Write-Host "Echo written (from stdout fallback): $echoPath" -ForegroundColor Green
+            exit 0
+        }
+    }
+
+    Write-Warning "Echo not produced. Check $echoLog for claude output."
+    exit 1
 }
 
 # Mode 1: -InstallWatchTask
