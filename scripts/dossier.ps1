@@ -670,7 +670,7 @@ function Get-YouTubeShort {
 #   Append-FromClaude       : append a date-stamped reflection to FROM-CLAUDE.md
 #   Update-CreatorSignature : (re)generate ARCHIVE/SIGNATURES/<user>.md (3+ posts)
 #   Update-Archive          : orchestrator called by the pipeline
-#   Build-ArchiveIndex      : STUB — B2 dispatch will replace the body
+#   Build-ArchiveIndex      : (re)build ARCHIVE/index.html — creator cards + tag-pill filter
 # =============================================================================
 function Get-ArchiveDossierData {
     [CmdletBinding()]
