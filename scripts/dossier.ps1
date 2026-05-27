@@ -2508,6 +2508,41 @@ except urllib.error.HTTPError as e:
 }
 
 # =============================================================================
+# META DELTA — compares today's extracted items to yesterday's META-DAILY file.
+# Returns only items whose URL or title did not appear in yesterday's digest.
+# Pure PowerShell - no external calls, no claude needed.
+# =============================================================================
+function Invoke-MetaDelta {
+    param(
+        [System.Collections.Generic.List[hashtable]]$TodayItems,
+        [string]$VideoMemRoot
+    )
+
+    $yesterday = (Get-Date).AddDays(-1).ToString('yyyy-MM-dd')
+    $yesterdayPath = Join-Path $VideoMemRoot "META-DAILY-$yesterday.md"
+
+    if (-not (Test-Path $yesterdayPath)) {
+        Write-Host "  [meta-m3] No yesterday file ($yesterdayPath) - all $($TodayItems.Count) items are new." -ForegroundColor DarkGray
+        return ,$TodayItems
+    }
+
+    $yesterdayContent = Get-Content $yesterdayPath -Raw -Encoding utf8
+    $newItems = [System.Collections.Generic.List[hashtable]]::new()
+
+    foreach ($item in $TodayItems) {
+        # An item is "old" if its URL or its title appears verbatim in yesterday's file
+        $titleInYesterday = $item.title -and ($yesterdayContent -match [regex]::Escape($item.title))
+        $urlInYesterday   = $item.url   -and ($yesterdayContent -match [regex]::Escape($item.url))
+        if (-not $titleInYesterday -and -not $urlInYesterday) {
+            $newItems.Add($item)
+        }
+    }
+
+    Write-Host "  [meta-m3] Delta: $($TodayItems.Count) total, $($newItems.Count) new vs yesterday." -ForegroundColor DarkGray
+    return ,$newItems
+}
+
+# =============================================================================
 # NATIVE RECIPE FALLBACK — calls Anthropic API directly (no claude CLI needed)
 # to synthesize RECIPE.md from whatever dossier sources exist.
 # Returns $true if RECIPE.md was produced, $false otherwise.
