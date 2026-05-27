@@ -3960,6 +3960,125 @@ if ($TechniqueNotebook) {
     exit 0
 }
 
+# Mode 0c: -VerifyPost <url|shortCode>
+if ($VerifyPost) {
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if (-not $claudeCmd -and -not $env:ANTHROPIC_API_KEY) {
+        Write-Error "-VerifyPost requires either claude CLI on PATH or ANTHROPIC_API_KEY set for native fallbacks."
+        exit 1
+    }
+    if (-not (Test-Path $Script:VideoMemRoot)) {
+        Write-Error "video-memory root not found at $Script:VideoMemRoot. Run at least one dossier first."
+        exit 1
+    }
+
+    # Determine if $VerifyPost is a URL or a bare shortCode
+    $isUrl = $VerifyPost -match '^https?://'
+    $dossierFolder = $null
+
+    if ($isUrl) {
+        # Full pipeline: download + transcript + BRIEF, then V1/V2/V3
+        Write-Host ""
+        Write-Host "-VerifyPost: running download + transcript pipeline for $VerifyPost ..." -ForegroundColor Cyan
+        if (-not (Test-ApifyTokenLooksValid -Token $env:APIFY_TOKEN)) { [void](Read-ApifyTokenInteractive) }
+        if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            Write-Error "ffmpeg not found on PATH. Install: winget install Gyan.FFmpeg"
+            exit 3
+        }
+        $whisper = Get-WhisperBackend
+        if ($whisper.Backend) { Write-Host "Whisper backend: $($whisper.Backend)" -ForegroundColor DarkGray }
+        $pipeResult = Invoke-DossierForUrl -Url $VerifyPost -Whisper $whisper `
+            -DoTour:$false -DoRecipe:$false -DoOpen:$false -ForceFlag:$Force `
+            -DoNotebookLM:$false -NoArchive:$true -RebuildArchive:$false
+        if ($pipeResult.status -eq 'failed') {
+            Write-Error "Dossier pipeline failed: $($pipeResult.reason)"
+            exit 1
+        }
+        $dossierFolder = $pipeResult.folder
+        Write-Host "  Dossier folder: $dossierFolder" -ForegroundColor DarkGray
+    } else {
+        # ShortCode path: find existing dossier folder by matching _<shortCode> suffix
+        $shortCodeIn = $VerifyPost.Trim()
+        $candidates = Get-ChildItem -Path $Script:VideoMemRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match "_${shortCodeIn}$" } |
+            Sort-Object LastWriteTime -Descending
+        if (-not $candidates -or $candidates.Count -eq 0) {
+            Write-Error "No dossier folder found for shortCode '$shortCodeIn' under $Script:VideoMemRoot. Run the URL through dossier first."
+            exit 1
+        }
+        $dossierFolder = $candidates[0].FullName
+        Write-Host "-VerifyPost: using existing dossier folder $dossierFolder" -ForegroundColor DarkGray
+    }
+
+    # Resolve artifact paths
+    $transcriptTxt = Join-Path $dossierFolder 'transcript.txt'
+    $briefMd       = Join-Path $dossierFolder 'BRIEF.md'
+    $verifyMd      = Join-Path $dossierFolder 'VERIFY.md'
+    $manifestPath  = Join-Path $dossierFolder 'manifest.json'
+
+    if (-not (Test-Path $transcriptTxt) -and -not (Test-Path $briefMd)) {
+        Write-Error "No transcript.txt or BRIEF.md found in $dossierFolder. Cannot extract claims."
+        exit 55
+    }
+
+    # V1 - Claims extraction
+    Write-Host ""
+    Write-Host "[verify 1/3] Extracting claims ..." -ForegroundColor Cyan
+    $v1Result = Invoke-VerifyPostClaims -DossierFolder $dossierFolder -TranscriptTxt $transcriptTxt -BriefMd $briefMd
+    if (-not $v1Result.ok) {
+        Write-Error "Claims extraction failed (V1). Check $dossierFolder\claude-verify-v1.log"
+        exit 56
+    }
+    $repoCount = if ($v1Result.claims.repos) { @($v1Result.claims.repos).Count } else { 0 }
+    $libCount  = if ($v1Result.claims.libraries) { @($v1Result.claims.libraries).Count } else { 0 }
+    $mcpCount  = if ($v1Result.claims.mcp_servers) { @($v1Result.claims.mcp_servers).Count } else { 0 }
+    $modelCount = if ($v1Result.claims.models) { @($v1Result.claims.models).Count } else { 0 }
+    Write-Host "  Claims found: repos=$repoCount, libs=$libCount, mcp=$mcpCount, models=$modelCount" -ForegroundColor DarkGray
+
+    # V2 - Parallel verification
+    Write-Host "[verify 2/3] Verifying claims ..." -ForegroundColor Cyan
+    $v2Result = Invoke-VerifyPostCheck -Claims $v1Result.claims
+    $verifyResultsJson = ($v2Result.results | ConvertTo-Json -Depth 6)
+    Write-Host "  Verification complete: $($v2Result.results.Count) item(s) checked." -ForegroundColor DarkGray
+
+    # V3 - Personalized synthesis
+    Write-Host "[verify 3/3] Synthesizing VERIFY.md ..." -ForegroundColor Cyan
+    $synthOk = Invoke-VerifyPostSynth `
+        -DossierFolder $dossierFolder `
+        -ClaimsJson $v1Result.claimsJson `
+        -VerifyResultsJson $verifyResultsJson `
+        -VerifyMd $verifyMd
+
+    if ($synthOk) {
+        # Write verify_path into manifest.json (idempotent rebuild)
+        if (Test-Path $manifestPath) {
+            try {
+                $manifestObj = Get-Content -Path $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
+                $rebuild = [ordered]@{}
+                foreach ($prop in $manifestObj.PSObject.Properties) { $rebuild[$prop.Name] = $prop.Value }
+                $rebuild['verify_path'] = $verifyMd
+                $rebuild | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestPath -Encoding utf8
+            } catch {
+                Write-Warning "Could not write verify_path into manifest.json: $($_.Exception.Message)"
+            }
+        }
+
+        Write-Host ""
+        Write-Host "VERIFY complete." -ForegroundColor Green
+        Write-Host "  VERIFY.md: $verifyMd" -ForegroundColor Green
+        Write-Host "  Folder:    $dossierFolder" -ForegroundColor Green
+
+        # Auto-open VERIFY.md unless -NoOpen
+        if (-not $NoOpen) {
+            try { Start-Process $verifyMd } catch {}
+        }
+    } else {
+        Write-Warning "VERIFY.md synthesis did not produce output. See $dossierFolder\claude-verify-v3.log"
+    }
+
+    exit 0
+}
+
 # Mode 1: -InstallWatchTask
 if ($InstallWatchTask) {
     Install-WatchTask -WatchInput $Watch -TimeStr $Time
