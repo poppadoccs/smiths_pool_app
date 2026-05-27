@@ -4038,7 +4038,10 @@ if ($VerifyPost) {
     # V2 - Parallel verification
     Write-Host "[verify 2/3] Verifying claims ..." -ForegroundColor Cyan
     $v2Result = Invoke-VerifyPostCheck -Claims $v1Result.claims
-    $verifyResultsJson = ($v2Result.results | ConvertTo-Json -Depth 6)
+    # NOTE: piping an empty array to ConvertTo-Json yields $null in PS7, not "[]".
+    # Use -InputObject @() to force array context so V3 always sees a valid JSON array
+    # even when V2 returned zero verifiable items.
+    $verifyResultsJson = ConvertTo-Json -InputObject @($v2Result.results) -Depth 6
     Write-Host "  Verification complete: $($v2Result.results.Count) item(s) checked." -ForegroundColor DarkGray
 
     # V3 - Personalized synthesis
