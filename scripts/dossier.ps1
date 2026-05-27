@@ -151,6 +151,9 @@ param(
     [switch]$ShowMeta,
     [switch]$FirecrawlPortfolio,
 
+    # Standalone mode: synthesize/refresh ARCHIVE/SIGNATURES/<user>.md for a specific creator
+    [string]$AnalyzeCreator,
+
     [switch]$Help
 )
 
@@ -3292,6 +3295,24 @@ if ($ShowMeta) {
         Get-Content $metaPath
     } else {
         Write-Host "No META.md yet -- run .\dossier.ps1 -UpdateMeta first." -ForegroundColor Yellow
+    }
+    exit 0
+}
+
+# Mode 0: -AnalyzeCreator <username> — standalone signature synthesis
+if ($AnalyzeCreator) {
+    if (-not (Test-Path $Script:VideoMemRoot)) {
+        Write-Error "video-memory root not found at $Script:VideoMemRoot. Run at least one dossier first."
+        exit 1
+    }
+    $cleanUser = $AnalyzeCreator -replace '^@',''
+    Write-Host "Analyzing @$cleanUser ..." -ForegroundColor DarkGray
+    Update-CreatorSignature -Username $cleanUser
+    $sigPath = Join-Path $Script:VideoMemRoot "ARCHIVE\SIGNATURES\$cleanUser.md"
+    if (Test-Path $sigPath) {
+        Write-Host "Signature written: $sigPath" -ForegroundColor Green
+    } else {
+        Write-Warning "Signature not produced. Likely <3 dossiers for @$cleanUser, or claude CLI missing."
     }
     exit 0
 }
