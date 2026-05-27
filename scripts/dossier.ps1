@@ -736,6 +736,7 @@ function Get-ArchiveDossierData {
             HasRecipe      = (Test-Path $recipePath)
             HasNotebookLM  = ([bool]$m.notebooklm_url)
             NotebookLMUrl  = $m.notebooklm_url
+            BuildsOn       = if ($m.PSObject.Properties.Name -contains 'builds_on' -and $m.builds_on) { @($m.builds_on) } else { @() }
         }
     }
     return $results
@@ -1033,6 +1034,19 @@ function Build-ArchiveIndex {
         $dataTagsAttr = ($allCardSlugs | Select-Object -Unique) -join ','
         $folderUrl = Format-FileUrl $latestPost.Folder
         $userEsc = Format-HtmlEscape $u
+        # Collect builds_on refs across this creator's posts for the card extends-badge.
+        # Cap at 2 visible to keep card height stable; deeper history surfaces in the Lineage section.
+        $allBuildsOn = @()
+        foreach ($p in $posts) { if ($p.BuildsOn) { $allBuildsOn += @($p.BuildsOn) } }
+        $allBuildsOn = @($allBuildsOn | Select-Object -Unique)
+        $extendsBadgeHtml = ''
+        if ($allBuildsOn.Count -gt 0) {
+            $extendsBadgeSb = [System.Text.StringBuilder]::new()
+            foreach ($ref in ($allBuildsOn | Select-Object -First 2)) {
+                $extendsBadgeSb.AppendFormat('<span class="extends-badge" title="extends {0}">&#8599; {0}</span>', (Format-HtmlEscape $ref)) | Out-Null
+            }
+            $extendsBadgeHtml = '<div class="card-extends">' + $extendsBadgeSb.ToString() + '</div>'
+        }
         [void]$cardsSb.AppendFormat(@'
 <a class="card" href="{0}" data-tags="{1}">
   <div class="card-head">
@@ -1043,6 +1057,7 @@ function Build-ArchiveIndex {
     <span class="card-rel" title="{6}">{5}</span>
   </div>
   <div class="card-chips">{7}</div>
+  {8}
 </a>
 '@,
             $folderUrl,
@@ -1052,7 +1067,8 @@ function Build-ArchiveIndex {
             $(if ($postCount -eq 1) { '' } else { 's' }),
             (Format-HtmlEscape $latestRel),
             (Format-HtmlEscape $latestAbs),
-            $chipsSb.ToString()
+            $chipsSb.ToString(),
+            $extendsBadgeHtml
         )
     }
     $cardsHtml = $cardsSb.ToString()
@@ -1119,6 +1135,45 @@ function Build-ArchiveIndex {
       <div class="audit-section">
         <div class="audit-list">$auditRowsHtml</div>
       </div>
+    </section>
+"@
+    }
+
+    # ---------- Lineage edges ----------
+    # Build a list of (from-dossier -> to-ref) edges for the Lineage section render.
+    $lineageEdges = @()
+    foreach ($d in $data) {
+        if ($d.BuildsOn -and @($d.BuildsOn).Count -gt 0) {
+            foreach ($ref in $d.BuildsOn) {
+                $lineageEdges += [pscustomobject]@{
+                    FromUser = $d.Username
+                    FromSC   = $d.ShortCode
+                    FromUrl  = Format-FileUrl $d.Folder
+                    ToRef    = $ref
+                }
+            }
+        }
+    }
+    $lineageSection = ''
+    if ($lineageEdges.Count -gt 0) {
+        $lSb = [System.Text.StringBuilder]::new()
+        foreach ($e in $lineageEdges) {
+            $fromEsc = Format-HtmlEscape "@$($e.FromUser)/$($e.FromSC)"
+            $toEsc   = Format-HtmlEscape $e.ToRef
+            [void]$lSb.AppendFormat(
+                '<div class="lineage-row"><a class="lineage-from" href="{0}">{1}</a><span class="lineage-arrow">extends</span><span class="lineage-to">{2}</span></div>',
+                $e.FromUrl, $fromEsc, $toEsc
+            )
+        }
+        $lineageRowsHtml = $lSb.ToString()
+        $edgeCount = $lineageEdges.Count
+        $lineageSection = @"
+    <section aria-label="Recipe lineage">
+      <div class="section-head">
+        <h2>Lineage</h2>
+        <span class="meta">$edgeCount connection$(if ($edgeCount -eq 1) { '' } else { 's' }) found in archive</span>
+      </div>
+      <div class="lineage-list">$lineageRowsHtml</div>
     </section>
 "@
     }
@@ -1224,6 +1279,20 @@ function Build-ArchiveIndex {
   /* HIDDEN BY FILTER */
   .is-hidden { display:none !important; }
 
+  /* LINEAGE */
+  .card-extends { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.15rem; }
+  .extends-badge {
+    font-family:var(--mono); font-size:.62rem; letter-spacing:.02em;
+    color:#a78bfa; border:1px solid #2d1f5e; background:#12102a;
+    padding:.12rem .45rem; border-radius:3px;
+  }
+  .lineage-list { display:flex; flex-direction:column; gap:.5rem; margin-top:.75rem; padding:1.25rem 1.5rem; border:1px solid var(--border); border-radius:6px; background:#0d0d0d; }
+  .lineage-row { font-family:var(--mono); font-size:.82rem; display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; }
+  .lineage-from { color:var(--accent); font-weight:600; }
+  .lineage-from:hover { text-decoration:underline; }
+  .lineage-arrow { color:var(--dim); font-size:.7rem; letter-spacing:.08em; text-transform:uppercase; }
+  .lineage-to { color:#a78bfa; }
+
   /* UNTAGGED AUDIT */
   .audit-section { padding: 1.25rem 1.5rem; border:1px solid var(--border); border-radius:6px; background:#0d0d0d; }
   .audit-list { display:flex; flex-direction:column; gap:.4rem; }
@@ -1272,6 +1341,8 @@ function Build-ArchiveIndex {
         $rowsHtml
       </div>
     </section>
+
+$lineageSection
 
 $auditSection
 
@@ -2922,6 +2993,13 @@ Synthesize $recipeMd with this structure:
 (2-3 sentences: how hard is this to reproduce? Is the magic in 1
  technique or 5? Is it realtime or pre-rendered?)
 
+## Builds On
+List 1-3 existing dossiers from your --add-dir archive whose techniques
+this post directly extends, remixes, or improves upon. Format each ref as:
+- @username/shortCode - [one-sentence explanation of the move borrowed or evolved]
+If this post is genuinely original with no clear ancestors in the archive,
+write: - (none). Do not invent connections.
+
 Be specific. Cite library names. Reference the frames you looked at.
 Do NOT include preamble - start with the heading.
 "@
@@ -2933,6 +3011,35 @@ Do NOT include preamble - start with the heading.
                 if (Test-Path $recipeMd) {
                     $recipeRan = $true
                     Write-Host "       RECIPE.md written" -ForegroundColor DarkGray
+
+                    # Parse ## Builds On section and persist refs to manifest.json.
+                    # Reuses the same ordered-hashtable rebuild pattern used for
+                    # notebooklm_url at lines ~2940-2949.
+                    try {
+                        $recipeText = Get-Content $recipeMd -Raw -Encoding utf8
+                        $buildsOnRefs = @()
+                        if ($recipeText -match '(?ms)^## Builds On\s*\r?\n(.*?)(?=^##|\z)') {
+                            $sectionText = $Matches[1]
+                            $refMatches = [regex]::Matches($sectionText, '@([\w.-]+)/([\w-]+)')
+                            foreach ($rm in $refMatches) {
+                                $buildsOnRefs += "$($rm.Groups[1].Value)/$($rm.Groups[2].Value)"
+                            }
+                            $buildsOnRefs = @($buildsOnRefs | Select-Object -Unique)
+                        }
+                        if ($buildsOnRefs.Count -gt 0) {
+                            $mfPath = Join-Path $outDir 'manifest.json'
+                            if (Test-Path $mfPath) {
+                                $mfObj = Get-Content $mfPath -Raw -Encoding utf8 | ConvertFrom-Json
+                                $mfBuild = [ordered]@{}
+                                foreach ($prop in $mfObj.PSObject.Properties) { $mfBuild[$prop.Name] = $prop.Value }
+                                $mfBuild['builds_on'] = $buildsOnRefs
+                                $mfBuild | ConvertTo-Json -Depth 6 | Set-Content -Path $mfPath -Encoding utf8
+                                Write-Host "       builds_on: $($buildsOnRefs -join ', ')" -ForegroundColor DarkGray
+                            }
+                        }
+                    } catch {
+                        Write-Host "       [lineage] failed to parse Builds On: $($_.Exception.Message)" -ForegroundColor DarkGray
+                    }
                 } else {
                     Write-Warning "claude CLI ran but RECIPE.md not produced."
                 }
