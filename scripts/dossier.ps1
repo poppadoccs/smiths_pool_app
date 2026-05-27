@@ -2894,6 +2894,17 @@ function Invoke-WatchlistRun {
     Write-Host "Watchlist digest written:" -ForegroundColor Green
     Write-Host "  $digestMd" -ForegroundColor Green
     Write-Host "  $digestHtml" -ForegroundColor Green
+
+    # Auto-open digest HTML (mirrors -OpenArchive pattern; uses Get-DefaultBrowserExe).
+    # Soft-fails so scheduled-task runs without an interactive session don't error.
+    if (Test-Path $digestHtml) {
+        $browser = Get-DefaultBrowserExe
+        if ($browser) {
+            try { Start-Process -FilePath $browser -ArgumentList "`"$digestHtml`"" } catch {}
+        } else {
+            try { Start-Process $digestHtml } catch {}
+        }
+    }
 }
 
 function Install-WatchTask {
