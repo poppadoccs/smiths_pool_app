@@ -217,6 +217,15 @@ FLAGS:
   -FirecrawlPortfolio    Also Firecrawl-scrape the externalUrl after tour (saves PORTFOLIO-CONTENT.md)
   -Help             Print this help
 
+OPTIONAL ENVIRONMENT VARIABLES:
+  APIFY_TOKEN              Required for all scraping. Prompted on first run if missing.
+  ANTHROPIC_API_KEY        Optional. Unlocks Invoke-NativeRecipe / Invoke-NativeTour
+                           fallbacks when the claude CLI is unavailable.
+  FIRECRAWL_API_KEY        Required for -FirecrawlPortfolio and -UpdateMeta. Prompted
+                           on first run if missing.
+  WHISPER_MODEL            Required only if whisper.cpp backend is selected. Path to
+                           a downloaded GGML model file (e.g., ggml-base.en.bin).
+
 ARTIFACTS PER RUN (under %USERPROFILE%\video-memory\<date>_<user>_<id>\):
   source.mp4, frames\f*.png, audio.{aac,wav}, manifest.json
   BRIEF.md, index.html
