@@ -4354,17 +4354,24 @@ function Install-MetaTask {
         [string]$TimeStr
     )
     if ([string]::IsNullOrWhiteSpace($TimeStr)) { $TimeStr = '07:00' }
-    if ($TimeStr -notmatch '^\d{2}:\d{2}$') {
-        Write-Host "-Time must be HH:mm (24h). Got: $TimeStr" -ForegroundColor Red
+    # Real time validation: a loose ^\d{2}:\d{2}$ regex accepts impossible values
+    # like 29:99, which then throw an UNHANDLED error at New-ScheduledTaskTrigger
+    # (it ran before the try), bypassing the exit 62 path. TryParseExact with the
+    # 'HH:mm' format only accepts 00-23 hours and 00-59 minutes.
+    $parsedTime = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact($TimeStr, 'HH:mm', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$parsedTime)) {
+        Write-Host "-Time must be a valid 24h HH:mm (00-23:00-59). Got: $TimeStr" -ForegroundColor Red
         exit 1
     }
     $scriptPath = $PSCommandPath
     if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
     $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -MetaPipe"
-    $action = New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument $argList
-    $trigger = New-ScheduledTaskTrigger -Daily -At $TimeStr
     $taskName = 'DossierMetaPipeDaily'
     try {
+        # Build action + trigger inside the try so any scheduled-task setup failure
+        # routes to the exit 62 path instead of falling out as a generic error.
+        $action = New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument $argList
+        $trigger = New-ScheduledTaskTrigger -Daily -At $TimeStr
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Description "Daily dossier meta digest (scrape, diff, verify, synthesize)" -Force | Out-Null
         Write-Host "Scheduled task '$taskName' registered. Runs daily at $TimeStr." -ForegroundColor Green
         Write-Host "  Runs:    pwsh.exe -File `"$scriptPath`" -MetaPipe" -ForegroundColor DarkGray
