@@ -5039,6 +5039,98 @@ _Hypothetical post generated from signature. Not for publishing._
     exit 1
 }
 
+# Mode 0e: -InstallMetaTask — register the daily meta-digest scheduled task.
+if ($InstallMetaTask) {
+    # Honor the documented 07:00 default; -Time overrides only when explicitly
+    # passed (the global $Time default of 08:00 is shared with the watch task,
+    # so we cannot just forward $Time without making meta default to 08:00).
+    $metaTime = if ($PSBoundParameters.ContainsKey('Time')) { $Time } else { '07:00' }
+    Install-MetaTask -TimeStr $metaTime
+    exit 0
+}
+
+# Mode 0f: -MetaPipe — daily meta routine:
+#   fetch (reddit/HN/GitHub/blogs) -> extract -> delta vs yesterday -> verify -> synth.
+if ($MetaPipe) {
+    # Preflight: extract + synth both need a model. Require the claude CLI on
+    # PATH or an Anthropic key; bail with a distinct code if neither is present.
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if (-not $claudeCmd -and -not $env:ANTHROPIC_API_KEY) {
+        Write-Error "-MetaPipe needs the claude CLI on PATH or ANTHROPIC_API_KEY set (extract + synth require a model)."
+        exit 60
+    }
+
+    # Firecrawl is optional: reddit + HN are unauthenticated and still run; only
+    # GitHub trending + blog feeds are skipped when the key is absent.
+    $fcKey = $env:FIRECRAWL_API_KEY
+    if ([string]::IsNullOrWhiteSpace($fcKey)) {
+        Write-Warning "[meta] FIRECRAWL_API_KEY not set - GitHub trending + blog feeds will be skipped (reddit + HN still run)."
+    }
+
+    if (-not (Test-Path $Script:VideoMemRoot)) {
+        New-Item -ItemType Directory -Force -Path $Script:VideoMemRoot | Out-Null
+    }
+
+    # One-time hint: a personalization profile sharpens the Top-picks ranking.
+    $metaProfilePath = Join-Path $Script:VideoMemRoot 'LUCAC-PROFILE.md'
+    if (-not (Test-Path $metaProfilePath)) {
+        Write-Host "[meta] Tip: create $metaProfilePath to personalize the Top-picks ranking (optional - the digest still runs without it)." -ForegroundColor DarkGray
+    }
+
+    $today = Get-Date -Format 'yyyy-MM-dd'
+    $metaDailyPath = Join-Path $Script:VideoMemRoot "META-DAILY-$today.md"
+
+    Write-Host ""
+    Write-Host "=== Daily Meta Routine ($today) ===" -ForegroundColor Cyan
+
+    # Step 1/5: fetch raw source content (4 parallel jobs).
+    Write-Host "[1/5] Fetching sources (reddit, HN, GitHub, blogs)..." -ForegroundColor Cyan
+    $sources = Invoke-MetaSourceFetch -FirecrawlKey $fcKey
+    $anySourceOk = $sources.reddit.ok -or $sources.hn.ok -or $sources.github.ok -or $sources.blogs.ok
+    if (-not $anySourceOk) {
+        Write-Error "[meta] All source fetches returned empty output. Nothing to synthesize."
+        exit 61
+    }
+
+    # Step 2/5: extract structured items per category, novelty-filtered.
+    Write-Host "[2/5] Extracting items (novelty >= $NoveltyMin)..." -ForegroundColor Cyan
+    $metaItems = Invoke-MetaItemExtract -Sources $sources -NoveltyMin $NoveltyMin
+
+    # Step 3/5: diff against yesterday's digest (pure PowerShell).
+    Write-Host "[3/5] Diffing against yesterday's digest..." -ForegroundColor Cyan
+    $metaDelta = Invoke-MetaDelta -TodayItems $metaItems -VideoMemRoot $Script:VideoMemRoot
+
+    # Step 4/5: verify the new items (reuses verify-post V2 plumbing).
+    Write-Host "[4/5] Verifying $($metaDelta.Count) new item(s)..." -ForegroundColor Cyan
+    $metaVerify = Invoke-MetaVerify -Items $metaDelta
+
+    # Step 5/5: synthesize the personalized digest.
+    Write-Host "[5/5] Synthesizing META-DAILY-$today.md ..." -ForegroundColor Cyan
+    $metaSynthOk = Invoke-MetaSynth -DeltaItems $metaDelta -VerifyResults $metaVerify -MetaDailyPath $metaDailyPath
+    if (-not $metaSynthOk) {
+        Write-Error "[meta] Synthesis failed - META-DAILY not written. See claude-meta-synth-$today.log in $Script:VideoMemRoot."
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Host "Meta digest written:" -ForegroundColor Green
+    Write-Host "  $metaDailyPath" -ForegroundColor Green
+
+    # Auto-open the digest unless -NoOpen (mirrors the watch-digest auto-open via
+    # Get-DefaultBrowserExe; soft-fails so scheduled-task runs without an
+    # interactive desktop session don't error out).
+    if (-not $NoOpen -and (Test-Path $metaDailyPath)) {
+        $browser = Get-DefaultBrowserExe
+        if ($browser) {
+            try { Start-Process -FilePath $browser -ArgumentList "`"$metaDailyPath`"" } catch {}
+        } else {
+            try { Start-Process $metaDailyPath } catch {}
+        }
+    }
+
+    exit 0
+}
+
 # Mode 1: -InstallWatchTask
 if ($InstallWatchTask) {
     Install-WatchTask -WatchInput $Watch -TimeStr $Time
