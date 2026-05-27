@@ -2612,6 +2612,239 @@ function Invoke-MetaVerify {
 }
 
 # =============================================================================
+# META SYNTH — writes the personalized daily digest (META-DAILY-<date>.md).
+# Reads META.md (stack context) + LUCAC-PROFILE.md (personalization; graceful
+# fallback when absent). Feeds today's delta items + verification results to
+# claude and asks for a 5-section digest. Primary path: claude writes the file
+# directly (--add-dir). Defensive stdout fallback slices from the
+# "# META-DAILY" header forward (mirrors the W4 codex slice fix — never save the
+# raw mixed stdout/stderr stream). Returns $true if the digest was produced.
+# =============================================================================
+function Invoke-MetaSynth {
+    param(
+        [System.Collections.Generic.List[hashtable]]$DeltaItems,
+        $VerifyResults,
+        [string]$MetaDailyPath
+    )
+
+    $today = Get-Date -Format 'yyyy-MM-dd'
+
+    # Stack context (same source of truth as verify-post V3).
+    $metaPath = Join-Path $Script:VideoMemRoot 'META.md'
+    $metaContent = if (Test-Path $metaPath) {
+        $raw = Get-Content $metaPath -Raw -Encoding utf8
+        if ($raw.Length -gt 16000) { $raw.Substring(0, 16000) + "`n[... META.md truncated ...]" } else { $raw }
+    } else {
+        "(META.md not present at $metaPath - synthesize using general best-fit reasoning; flag the missing context in the output.)"
+    }
+
+    # Personalization profile (optional — graceful fallback when absent).
+    $profilePath = Join-Path $Script:VideoMemRoot 'LUCAC-PROFILE.md'
+    $profileContent = if (Test-Path $profilePath) {
+        $raw = Get-Content $profilePath -Raw -Encoding utf8
+        if ($raw.Length -gt 8000) { $raw.Substring(0, 8000) + "`n[... LUCAC-PROFILE.md truncated ...]" } else { $raw }
+    } else {
+        "(LUCAC-PROFILE.md not present at $profilePath - rank Top picks by general Lucac fit using META.md; do not invent profile details.)"
+    }
+
+    $deltaJson  = if ($DeltaItems -and $DeltaItems.Count -gt 0) { $DeltaItems | ConvertTo-Json -Depth 6 } else { '[]' }
+    $verifyJson = if ($VerifyResults) { $VerifyResults | ConvertTo-Json -Depth 8 } else { '{}' }
+
+    $prompt = @"
+You are writing Alex's daily AI/dev meta digest. Alex runs Lucac LLC (solo
+founder, construction-to-tech pivot, building tools for his pool-industry
+business plus broader operations).
+
+Two context blocks describe him and his stack. Use them as the source of truth
+for ranking what matters to HIM specifically - not generic "cool tech".
+
+## META.md (Alex's stack research)
+
+$metaContent
+
+## LUCAC-PROFILE.md (Alex's personalization profile)
+
+$profileContent
+
+---
+
+You are given:
+1. TODAY'S NEW ITEMS - things that appeared today and were NOT in yesterday's
+   digest (already novelty-filtered and de-duplicated).
+2. VERIFICATION RESULTS - automated checks on the items' repos/libraries/models
+   (existence, stars, versions). Use these to keep your claims honest.
+
+Write the digest to: $MetaDailyPath
+
+The file MUST start with this exact header line (nothing before it):
+
+# META-DAILY - $today
+
+Then these exact sections, in order:
+
+## What Changed Today
+
+Bullet each new item: **<title>** - one sentence on what it is + why it's
+notable. Group loosely by kind (models, repos/libraries, MCP, web/3D, other).
+If there are zero new items, write "Nothing new cleared the novelty filter today."
+
+## Top 1-3 for Alex
+
+Rank the 1-3 items with the highest fit for Alex's stack/goals (per META.md +
+LUCAC-PROFILE.md). For each: name it and give 1-2 sentences on WHY it fits him
+specifically. If nothing is a strong fit, say so plainly - do not force picks.
+
+## Fastest Proven Routes
+
+For EACH Top pick, give the fastest proven route to try it:
+- Install/access command (npm i X, pip install Y, npx, git clone, URL)
+- Time-to-first-signal (rough, e.g. "~10 min to a working call")
+- First 3 concrete steps, numbered.
+Only use install commands you are confident are real; if unsure, say
+"verify install before relying on this".
+
+## Skip If...
+
+For the items that did NOT make Top picks: one line each on when/why Alex
+should skip it (e.g., "Skip unless you're doing realtime audio").
+
+## Verification Notes
+
+Surface anything from the VERIFICATION RESULTS worth flagging: repos that don't
+exist, suspiciously low stars, deprecated/unmaintained signals, version
+mismatches. If everything checked out, write "All checked items resolved cleanly."
+
+---
+
+TODAY'S NEW ITEMS (JSON):
+$deltaJson
+
+VERIFICATION RESULTS (JSON):
+$verifyJson
+
+Write the complete META-DAILY markdown now. Start with "# META-DAILY - $today".
+No preamble, no explanation - just the markdown.
+"@
+
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if ($claudeCmd) {
+        Write-Host "  [meta-m5] Synthesizing META-DAILY via claude CLI ..." -ForegroundColor DarkGray
+        $synthLog = Join-Path $Script:VideoMemRoot "claude-meta-synth-$today.log"
+        $stdout = $null
+        try {
+            $stdout = $prompt | & claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --add-dir $Script:VideoMemRoot 2>&1
+            Set-Content -Path $synthLog -Value ($stdout | Out-String) -Encoding utf8
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "[meta-m5] claude CLI exited $LASTEXITCODE"
+                return $false
+            }
+        } catch {
+            Write-Warning "[meta-m5] claude CLI threw: $($_.Exception.Message)"
+            return $false
+        }
+        # Primary path: claude wrote the file directly via its file-write capability.
+        if ((Test-Path $MetaDailyPath) -and ((Get-Item $MetaDailyPath).Length -gt 200)) {
+            $sz = (Get-Item $MetaDailyPath).Length
+            Write-Host "  [meta-m5] META-DAILY written ($sz bytes)" -ForegroundColor Green
+            return $true
+        }
+        # Defensive stdout fallback: slice from the "# META-DAILY" header forward,
+        # dropping any ANSI/stderr noise that preceded it (2>&1 merges both streams).
+        # Mirrors the W4 codex slice fix — never save the raw mixed stream.
+        $stdoutText = if ($stdout -is [array]) { $stdout -join "`n" } else { [string]$stdout }
+        $headerMatch = [regex]::Match($stdoutText, '(?m)^# META-DAILY')
+        if ($headerMatch.Success -and ($stdoutText.Length - $headerMatch.Index) -gt 200) {
+            $markdownOnly = $stdoutText.Substring($headerMatch.Index)
+            $markdownOnly | Set-Content -Path $MetaDailyPath -Encoding utf8
+            if ((Test-Path $MetaDailyPath) -and ((Get-Item $MetaDailyPath).Length -gt 200)) {
+                Write-Host "  [meta-m5] META-DAILY written (from stdout fallback, sliced from header)" -ForegroundColor Green
+                return $true
+            }
+        }
+        Write-Warning "[meta-m5] claude ran but META-DAILY not produced or too small. Check $synthLog"
+        return $false
+    } else {
+        Write-Host "  [meta-m5] claude CLI not found; trying native fallback ..." -ForegroundColor DarkGray
+        return (Invoke-NativeMetaSynth -Prompt $prompt -MetaDailyPath $MetaDailyPath)
+    }
+}
+
+# =============================================================================
+# META SYNTH NATIVE FALLBACK — calls the Anthropic API directly when the claude
+# CLI is absent. Writes META-DAILY-<date>.md from the API response. Mirrors
+# Invoke-NativeVerifySynth; out-path is passed via DOSSIER_META_DAILY_PATH.
+# Returns $true/$false.
+# =============================================================================
+function Invoke-NativeMetaSynth {
+    param(
+        [string]$Prompt,
+        [string]$MetaDailyPath
+    )
+
+    if (-not $env:ANTHROPIC_API_KEY) {
+        Write-Host "       (ANTHROPIC_API_KEY not set; cannot synthesize META-DAILY natively)" -ForegroundColor DarkGray
+        return $false
+    }
+    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pyCmd) {
+        Write-Host "       (python not on PATH; cannot synthesize META-DAILY natively)" -ForegroundColor DarkGray
+        return $false
+    }
+
+    $pyScript = @'
+import sys, os, json, urllib.request, urllib.error
+
+api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+out_path = os.environ.get('DOSSIER_META_DAILY_PATH', '')
+if not api_key:
+    print('[native-meta-synth] ANTHROPIC_API_KEY not set', file=sys.stderr); sys.exit(1)
+if not out_path:
+    print('[native-meta-synth] DOSSIER_META_DAILY_PATH not set', file=sys.stderr); sys.exit(1)
+
+prompt_text = sys.stdin.read()
+payload = {
+    'model': 'claude-sonnet-4-6',
+    'max_tokens': 4096,
+    'messages': [{'role': 'user', 'content': prompt_text}]
+}
+data = json.dumps(payload).encode('utf-8')
+req = urllib.request.Request(
+    'https://api.anthropic.com/v1/messages',
+    data=data,
+    headers={'x-api-key': api_key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
+    method='POST'
+)
+try:
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        body = json.loads(resp.read().decode('utf-8'))
+        text = body['content'][0]['text']
+        with open(out_path, 'w', encoding='utf-8') as f:
+            f.write(text)
+        print(f'[native-meta-synth] META-DAILY written ({len(text)} bytes)')
+except urllib.error.HTTPError as e:
+    print(f'[native-meta-synth] HTTP {e.code}: {e.read().decode()}', file=sys.stderr); sys.exit(1)
+'@
+
+    $pyTempFile = Join-Path $env:TEMP "dossier-meta-synth-$(Get-Random).py"
+    try {
+        Set-Content -Path $pyTempFile -Value $pyScript -Encoding utf8
+        $env:DOSSIER_META_DAILY_PATH = $MetaDailyPath
+        $Prompt | & python $pyTempFile 2>&1 | Out-Host
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $MetaDailyPath) -and ((Get-Item $MetaDailyPath).Length -gt 200)) {
+            return $true
+        }
+        Write-Warning "[native-meta-synth] python exited $LASTEXITCODE or META-DAILY not produced."
+        return $false
+    } catch {
+        Write-Warning "[native-meta-synth] threw: $($_.Exception.Message)"
+        return $false
+    } finally {
+        $env:DOSSIER_META_DAILY_PATH = $null
+        if (Test-Path $pyTempFile) { Remove-Item $pyTempFile -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# =============================================================================
 # NATIVE RECIPE FALLBACK — calls Anthropic API directly (no claude CLI needed)
 # to synthesize RECIPE.md from whatever dossier sources exist.
 # Returns $true if RECIPE.md was produced, $false otherwise.
