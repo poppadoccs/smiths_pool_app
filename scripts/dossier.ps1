@@ -1874,6 +1874,208 @@ function Invoke-VerifyPostCheck {
 }
 
 # =============================================================================
+# VERIFY-POST V3 — PERSONALIZED SYNTHESIS
+# Combines V1 claims JSON + V2 verification results into VERIFY.md.
+# Reads META.md at runtime so the synthesis uses Alex's current stack research
+# rather than a hardcoded stack reference (which would go stale).
+# Returns $true if VERIFY.md was produced, $false otherwise.
+# =============================================================================
+function Invoke-VerifyPostSynth {
+    param(
+        [string]$DossierFolder,
+        [string]$ClaimsJson,
+        [string]$VerifyResultsJson,
+        [string]$VerifyMd
+    )
+
+    # Read META.md for stack context (Alex's Lucac LLC research)
+    $metaPath = Join-Path $Script:VideoMemRoot 'META.md'
+    $metaContent = if (Test-Path $metaPath) {
+        $raw = Get-Content $metaPath -Raw -Encoding utf8
+        if ($raw.Length -gt 16000) { $raw.Substring(0, 16000) + "`n[... META.md truncated ...]" } else { $raw }
+    } else {
+        "(META.md not present at $metaPath - synthesize using general best-fit recommendations; flag the missing context in the output.)"
+    }
+
+    $prompt = @"
+You are helping Alex (Lucac LLC, solo founder, construction-to-tech pivot,
+building tools for his pool-industry business plus broader operations).
+
+His current stack and tooling research is captured in META.md below.
+Use this as the source of truth for what "his stack" means.
+
+## META.md (Alex's stack research)
+
+$metaContent
+
+---
+
+You have:
+1. CLAIMS JSON - what a social-media post claimed about tools, repos, libraries, models
+2. VERIFICATION JSON - automated checks: github existence, stars, last push,
+   npm/pypi version, HuggingFace presence
+
+Write VERIFY.md to the dossier folder at: $DossierFolder
+
+VERIFY.md must have exactly these sections:
+
+# VERIFY - Post Claim Audit
+
+_Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm')_
+
+## Real?
+
+For each claim: one-line verdict (CONFIRMED / UNVERIFIED / NOT FOUND / DEPRECATED)
++ one sentence of evidence. Use the verification JSON. Be blunt.
+
+## Get It
+
+For each CONFIRMED item: install/access command (npm install X, pip install Y,
+github.com/Z, etc.). Skip anything NOT FOUND or DEPRECATED.
+
+## Try It For Your Stack
+
+For each CONFIRMED item: one concrete suggestion for how Alex could use it,
+referencing his actual stack from META.md above. If it doesn't fit at all,
+say "Not relevant to your current stack."
+
+## Upgrade for Lucac
+
+Cross-cutting: if two or more claims together unlock a workflow upgrade for
+Alex's broader operations (the dossier system, calendar app, anything in
+META.md's scope), describe it in 3-5 sentences. If no cross-cutting
+opportunity, write "No cross-cutting upgrade identified."
+
+## Skip If...
+
+For each item: one-liner on when/why Alex should skip it entirely
+(e.g., "Skip if you're not doing 3D - irrelevant to current pool-app work").
+
+---
+
+CLAIMS JSON:
+$ClaimsJson
+
+VERIFICATION JSON:
+$VerifyResultsJson
+
+Write the complete VERIFY.md now. No preamble, no explanation - just the markdown.
+"@
+
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if ($claudeCmd) {
+        Write-Host "  [verify-v3] Synthesizing VERIFY.md via claude CLI ..." -ForegroundColor DarkGray
+        $synthLog = Join-Path $DossierFolder 'claude-verify-v3.log'
+        $stdout = $null
+        try {
+            $stdout = $prompt | & claude --dangerously-skip-permissions --model claude-sonnet-4-6 -p --add-dir $Script:VideoMemRoot 2>&1
+            Set-Content -Path $synthLog -Value ($stdout | Out-String) -Encoding utf8
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "[verify-v3] claude CLI exited $LASTEXITCODE"
+                return $false
+            }
+        } catch {
+            Write-Warning "[verify-v3] claude CLI threw: $($_.Exception.Message)"
+            return $false
+        }
+        # Primary path: claude wrote the file directly via its file-write capability
+        if ((Test-Path $VerifyMd) -and ((Get-Item $VerifyMd).Length -gt 200)) {
+            $sz = (Get-Item $VerifyMd).Length
+            Write-Host "  [verify-v3] VERIFY.md written ($sz bytes)" -ForegroundColor Green
+            return $true
+        }
+        # Defensive fallback: claude emitted markdown to stdout instead of writing the file.
+        # Capture stdout and write VERIFY.md ourselves.
+        $stdoutText = if ($stdout -is [array]) { $stdout -join "`n" } else { [string]$stdout }
+        if ($stdoutText -and $stdoutText.Length -gt 200) {
+            $stdoutText | Set-Content -Path $VerifyMd -Encoding utf8
+            if ((Test-Path $VerifyMd) -and ((Get-Item $VerifyMd).Length -gt 200)) {
+                Write-Host "  [verify-v3] VERIFY.md written from stdout fallback" -ForegroundColor Green
+                return $true
+            }
+        }
+        Write-Warning "[verify-v3] claude ran but VERIFY.md not produced or too small. Check $synthLog"
+        return $false
+    } else {
+        Write-Host "  [verify-v3] claude CLI not found; trying native fallback ..." -ForegroundColor DarkGray
+        return (Invoke-NativeVerifySynth -Prompt $prompt -VerifyMd $VerifyMd)
+    }
+}
+
+# =============================================================================
+# VERIFY-POST V3 NATIVE FALLBACK — calls Anthropic API when claude CLI absent.
+# Writes VERIFY.md directly from API response. Returns $true/$false.
+# =============================================================================
+function Invoke-NativeVerifySynth {
+    param(
+        [string]$Prompt,
+        [string]$VerifyMd
+    )
+
+    if (-not $env:ANTHROPIC_API_KEY) {
+        Write-Host "       (ANTHROPIC_API_KEY not set; cannot synthesize VERIFY.md natively)" -ForegroundColor DarkGray
+        return $false
+    }
+    $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pyCmd) {
+        Write-Host "       (python not on PATH; cannot synthesize VERIFY.md natively)" -ForegroundColor DarkGray
+        return $false
+    }
+
+    $pyScript = @'
+import sys, os, json, urllib.request, urllib.error
+
+api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+out_path = os.environ.get('DOSSIER_VERIFY_PATH', '')
+if not api_key:
+    print('[native-verify] ANTHROPIC_API_KEY not set', file=sys.stderr); sys.exit(1)
+if not out_path:
+    print('[native-verify] DOSSIER_VERIFY_PATH not set', file=sys.stderr); sys.exit(1)
+
+prompt_text = sys.stdin.read()
+payload = {
+    'model': 'claude-sonnet-4-6',
+    'max_tokens': 4096,
+    'messages': [{'role': 'user', 'content': prompt_text}]
+}
+data = json.dumps(payload).encode('utf-8')
+req = urllib.request.Request(
+    'https://api.anthropic.com/v1/messages',
+    data=data,
+    headers={'x-api-key': api_key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
+    method='POST'
+)
+try:
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        body = json.loads(resp.read().decode('utf-8'))
+        text = body['content'][0]['text']
+        with open(out_path, 'w', encoding='utf-8') as f:
+            f.write(text)
+        print(f'[native-verify] VERIFY.md written ({len(text)} bytes)')
+except urllib.error.HTTPError as e:
+    print(f'[native-verify] HTTP {e.code}: {e.read().decode()}', file=sys.stderr); sys.exit(1)
+'@
+
+    $pyTempFile = Join-Path $env:TEMP "dossier-verify-synth-$(Get-Random).py"
+    try {
+        Set-Content -Path $pyTempFile -Value $pyScript -Encoding utf8
+        $env:DOSSIER_VERIFY_PATH = $VerifyMd
+        $Prompt | & python $pyTempFile 2>&1 | Out-Host
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $VerifyMd) -and ((Get-Item $VerifyMd).Length -gt 200)) {
+            return $true
+        }
+        Write-Warning "[native-verify] python exited $LASTEXITCODE or VERIFY.md not produced."
+        return $false
+    } catch {
+        Write-Warning "[native-verify] threw: $($_.Exception.Message)"
+        return $false
+    } finally {
+        $env:DOSSIER_VERIFY_PATH = $null
+        if (Test-Path $pyTempFile) { Remove-Item $pyTempFile -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# =============================================================================
 # NATIVE RECIPE FALLBACK — calls Anthropic API directly (no claude CLI needed)
 # to synthesize RECIPE.md from whatever dossier sources exist.
 # Returns $true if RECIPE.md was produced, $false otherwise.
