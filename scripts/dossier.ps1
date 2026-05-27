@@ -3157,11 +3157,11 @@ if ($UpdateMeta) {
     $metaPath = Join-Path $videoMemRoot 'META.md'
     $existingMeta = if (Test-Path $metaPath) { Get-Content $metaPath -Raw } else { "" }
 
-    $promptAI = "Research current state of consumer AI tools as of TODAY 2026-05-08. Cover: Claude (Anthropic - current models, recent shipping, pricing), GPT/OpenAI (current models, image gen, video), Gemini (3.x current, free tier, multimodal), specialty tools (Claude Design, Cursor, v0, Bolt, Lovable, Cline, Aider). For each: current version, current pricing, what shipped in last 60 days, when to use it. Use web search. Output well-structured markdown with date-stamped sources."
+    $promptAI = "Research current state of consumer AI tools as of TODAY $(Get-Date -Format 'yyyy-MM-dd'). Cover: Claude (Anthropic - current models, recent shipping, pricing), GPT/OpenAI (current models, image gen, video), Gemini (3.x current, free tier, multimodal), specialty tools (Claude Design, Cursor, v0, Bolt, Lovable, Cline, Aider). For each: current version, current pricing, what shipped in last 60 days, when to use it. Use web search. Output well-structured markdown with date-stamped sources."
 
-    $promptStack = "Research current state of web/3D dev stack as of TODAY 2026-05-08. Cover: Next.js current version + recent breaking changes, Tailwind current, shadcn current, Three.js / React Three Fiber / drei current, GSAP / Framer Motion / Lenis current, Spline AI updates, Vercel platform updates. Use web search. Output well-structured markdown with date-stamped sources."
+    $promptStack = "Research current state of web/3D dev stack as of TODAY $(Get-Date -Format 'yyyy-MM-dd'). Cover: Next.js current version + recent breaking changes, Tailwind current, shadcn current, Three.js / React Three Fiber / drei current, GSAP / Framer Motion / Lenis current, Spline AI updates, Vercel platform updates. Use web search. Output well-structured markdown with date-stamped sources."
 
-    $promptWorkflow = "Research current state of Claude Code, MCP servers, agent orchestration patterns as of TODAY 2026-05-08. Cover: new MCP servers in last 60 days, Claude Code feature updates, agent skill marketplace state, current best-practices from Anthropic blog + r/ClaudeAI + recent dev YouTube. Use web search. Output well-structured markdown with date-stamped sources."
+    $promptWorkflow = "Research current state of Claude Code, MCP servers, agent orchestration patterns as of TODAY $(Get-Date -Format 'yyyy-MM-dd'). Cover: new MCP servers in last 60 days, Claude Code feature updates, agent skill marketplace state, current best-practices from Anthropic blog + r/ClaudeAI + recent dev YouTube. Use web search. Output well-structured markdown with date-stamped sources."
 
     Write-Host "[1/4] Spawning 3 parallel research streams..." -ForegroundColor Cyan
     $j1 = Start-Job -ScriptBlock { param($p) & claude -p $p 2>&1 } -ArgumentList $promptAI
