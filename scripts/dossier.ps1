@@ -1993,7 +1993,7 @@ print(f"OK lang={info.language} segments={len(segments)}")
                     'whisper.cpp' {
                         $modelPath = $env:WHISPER_MODEL
                         if (-not $modelPath -or -not (Test-Path $modelPath)) {
-                            Write-Warning "whisper.cpp present but `\$env:WHISPER_MODEL not set."
+                            Write-Warning "whisper.cpp present but `$env:WHISPER_MODEL not set."
                             $transcriptionReason = 'whisper.cpp model not configured'
                         } else {
                             & $Whisper.Bin -m $modelPath -f $audioWavPath -otxt -osrt -of (Join-Path $outDir 'transcript') 2>&1 | Out-Host
