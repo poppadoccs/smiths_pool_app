@@ -2861,7 +2861,11 @@ Synthesize $recipeMd with this structure:
 ## Key techniques
 (Bullet list of the 3-7 visual techniques that produce the look.
  Be specific about CSS properties, easing curves, parallax depths,
- lighting setups, etc. Avoid generic advice.)
+ lighting setups, etc. Avoid generic advice. If any technique here
+ closely rhymes with one from another RECIPE.md visible via your
+ --add-dir archive, mention the connection at the end of that bullet
+ as "(connects to @username/shortCode - <one phrase>)". Don't force
+ a connection if none feels right.)
 
 ## Honest assessment
 (2-3 sentences: how hard is this to reproduce? Is the magic in 1
