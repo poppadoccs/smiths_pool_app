@@ -4356,6 +4356,137 @@ function ConvertFrom-AugurJson {
     try { return ($m.Value | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
 }
 
+# Build the forecast prompt from a creator signature.
+function Get-AugurPredictPrompt {
+    param([string]$SignatureText)
+    return @"
+You are Augur, a forecasting engine. You are given the synthesized signature of a content
+creator (their voice, recurring patterns, evolution, notable absences). Forecast their NEXT
+post as a PROBABILITY DISTRIBUTION over hypotheses - not a single guess.
+
+Emit ONLY a JSON object (no markdown, no commentary) in exactly this shape:
+
+{
+  "hypotheses": [
+    {"id":1,"kind":"modal","probability":0.0,"facets":{"hook":"","format":"","angle":"","topic":"","voice":""}},
+    {"id":2,"kind":"modal","probability":0.0,"facets":{"hook":"","format":"","angle":"","topic":"","voice":""}},
+    {"id":3,"kind":"modal","probability":0.0,"facets":{"hook":"","format":"","angle":"","topic":"","voice":""}},
+    {"id":4,"kind":"anti","probability":0.0,"facets":{"hook":"","format":"","angle":"","topic":"","voice":""}},
+    {"id":5,"kind":"wildcard","probability":0.0,"facets":{"hook":"","format":"","angle":"","topic":"","voice":""}}
+  ],
+  "residual_other": 0.0,
+  "baseline": {"facets":{"hook":"","format":"","angle":"","topic":"","voice":""}}
+}
+
+Facet meanings: hook = opening-line archetype/function; format = post type/length/structure;
+angle = the specific thesis/claim (NOT just the topic); topic = subject domain; voice = tone,
+rhythm, vocabulary, signature tics.
+
+Rules:
+- 3 modal hypotheses = most likely next-post archetypes, highest probability first.
+- 1 "anti" = something the signature says they would NOT do (explicit negative space), low prob.
+- 1 "wildcard" = a plausible but unlikely departure.
+- "baseline" = the creator's single most TYPICAL post (the null model - what they usually do).
+- All hypothesis probabilities + residual_other must sum to ~1.0 (0.97-1.03). residual_other is
+  the mass for "something none of these captured."
+- Be specific to THIS creator. Generic facets are a failure.
+
+CREATOR SIGNATURE:
+$SignatureText
+"@
+}
+
+# Generate + lock a probabilistic forecast for one creator. Returns $true on success.
+function Invoke-AugurPredict {
+    param(
+        [Parameter(Mandatory)][string]$User,
+        [Parameter(Mandatory)][string]$SignaturePath
+    )
+    $sigText = Get-Content $SignaturePath -Raw -Encoding utf8
+    if ([string]::IsNullOrWhiteSpace($sigText)) {
+        Write-Warning "[augur] signature for @$User is empty: $SignaturePath"; return $false
+    }
+    $prompt = Get-AugurPredictPrompt -SignatureText $sigText
+
+    Write-Host "  [augur] Forecasting @$User's next post ..." -ForegroundColor DarkGray
+    $raw = $null
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if ($claudeCmd) {
+        try { $raw = ($prompt | & claude --dangerously-skip-permissions --model $Script:AugurGenModel -p --add-dir $Script:VideoMemRoot 2>&1) -join "`n" }
+        catch { Write-Warning "[augur] claude predict threw: $($_.Exception.Message)" }
+    } elseif ($env:ANTHROPIC_API_KEY) {
+        $raw = Invoke-NativeAugurText -Prompt $prompt -Model $Script:AugurGenModel
+    } else {
+        Write-Error "[augur] need claude CLI or ANTHROPIC_API_KEY to forecast."; return $false
+    }
+
+    $forecast = ConvertFrom-AugurJson -Text $raw
+    if (-not $forecast -or -not $forecast.hypotheses -or @($forecast.hypotheses).Count -lt 1) {
+        Write-Warning "[augur] forecast JSON unparseable or empty. Raw: $($raw.Substring(0,[Math]::Min(200,$raw.Length)))"
+        return $false
+    }
+
+    # Versioning metadata (pin everything so a regenerated signature can't pollute this bet).
+    $sigHash      = (Get-FileHash -Path $SignaturePath -Algorithm SHA256).Hash.Substring(0,8)
+    $sigMtime     = (Get-Item $SignaturePath).LastWriteTime.ToString('o')
+    $dossierCount = @(Get-ArchiveDossierData | Where-Object { $_.Username -eq $User }).Count
+    $ts           = Get-Date -Format 'yyyy-MM-ddTHHmmss'
+
+    $record = [ordered]@{
+        user            = $User
+        created_at      = (Get-Date).ToString('o')
+        signature_hash  = $sigHash
+        signature_mtime = $sigMtime
+        dossier_count   = $dossierCount
+        generator_model = $Script:AugurGenModel
+        prompt_version  = $Script:AugurPromptVersion
+        hypotheses      = $forecast.hypotheses
+        residual_other  = $forecast.residual_other
+        baseline        = $forecast.baseline
+    }
+    $outPath = Join-Path $Script:AugurRoot "$User\$ts`__$sigHash.prediction.json"
+    Write-AtomicFile -Path $outPath -Content ($record | ConvertTo-Json -Depth 8)
+
+    Write-Host "  [augur] Bet locked: @$User, $(@($forecast.hypotheses).Count) hypotheses, sig $sigHash." -ForegroundColor Green
+    Write-Host "          $outPath" -ForegroundColor DarkGray
+    Write-Host "          Will be scored when the watchlist next catches @$User posting." -ForegroundColor DarkGray
+    return $true
+}
+
+# Native Anthropic-API call returning the model's text (mirrors Invoke-NativeMetaExtract).
+function Invoke-NativeAugurText {
+    param([Parameter(Mandatory)][string]$Prompt, [string]$Model = 'claude-sonnet-4-6')
+    if (-not $env:ANTHROPIC_API_KEY) { return $null }
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) { return $null }
+    $pyScript = @'
+import sys, os, json, urllib.request, urllib.error
+api_key = os.environ.get('ANTHROPIC_API_KEY','')
+model = os.environ.get('AUGUR_NATIVE_MODEL','claude-sonnet-4-6')
+if not api_key: sys.exit(1)
+prompt_text = sys.stdin.read()
+data = json.dumps({'model':model,'max_tokens':2048,'messages':[{'role':'user','content':prompt_text}]}).encode('utf-8')
+req = urllib.request.Request('https://api.anthropic.com/v1/messages', data=data,
+    headers={'x-api-key':api_key,'anthropic-version':'2023-06-01','content-type':'application/json'}, method='POST')
+try:
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        print(json.loads(resp.read().decode('utf-8'))['content'][0]['text'])
+except urllib.error.HTTPError as e:
+    print(f'[native-augur] HTTP {e.code}', file=sys.stderr); sys.exit(1)
+'@
+    $pyTempFile = Join-Path $env:TEMP "dossier-augur-text-$(Get-Random).py"
+    try {
+        Set-Content -Path $pyTempFile -Value $pyScript -Encoding utf8
+        $env:AUGUR_NATIVE_MODEL = $Model
+        $out = $Prompt | & python $pyTempFile 2>&1
+        if ($LASTEXITCODE -eq 0) { return ($out -join "`n") }
+        return $null
+    } catch { return $null }
+    finally {
+        $env:AUGUR_NATIVE_MODEL = $null
+        if (Test-Path $pyTempFile) { Remove-Item $pyTempFile -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
