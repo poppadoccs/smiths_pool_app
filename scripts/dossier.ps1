@@ -4905,6 +4905,250 @@ $ScrapedCorpus
 "@
 }
 
+# Apify gather: pull recent Instagram posts for the creator. Returns @{ ok; text;
+# scrape_calls; snapshot } where snapshot is the raw items array (JSON-serializable).
+# Designed to be the body of a Start-Job - all script-scope captures are passed in.
+function Invoke-PilgrimGatherApify {
+    param(
+        [Parameter(Mandatory)][string]$User,
+        [Parameter(Mandatory)][string]$ApifyToken
+    )
+    if ([string]::IsNullOrWhiteSpace($ApifyToken)) {
+        return @{ ok = $false; text = "## Apify (Instagram)`n(skipped: APIFY_TOKEN not set)"; scrape_calls = 0; snapshot = @() }
+    }
+    $env:APIFY_TOKEN = $ApifyToken   # the inline Invoke-ApifyActor reads env, not param
+    $calls = 0
+    $out = [System.Collections.Generic.List[string]]::new()
+    $items = @()
+    try {
+        # Inline POST against Apify - cannot call Invoke-ApifyActor from a Start-Job
+        # scriptblock without re-defining it; the inline call uses the exact same shape.
+        $body = @{ usernames = @($User) } | ConvertTo-Json -Depth 4 -Compress
+        $endpoint = 'https://api.apify.com/v2/acts/apify~instagram-profile-scraper/run-sync-get-dataset-items'
+        $headers = @{ Authorization = "Bearer $ApifyToken" }
+        $items = Invoke-RestMethod -Uri $endpoint -Method Post -Body $body -ContentType 'application/json' -Headers $headers -TimeoutSec 90
+        $calls++
+        if ($items -and $items.Count -gt 0) {
+            $p = $items[0]
+            $bio = if ($p.biography) { $p.biography } else { '' }
+            $out.Add("## Instagram profile @$User")
+            $out.Add("**Bio:** $bio")
+            if ($p.externalUrl) { $out.Add("**Link:** $($p.externalUrl)") }
+            $latest = if ($p.latestPosts) { $p.latestPosts } elseif ($p.posts) { $p.posts } else { @() }
+            $maxPosts = [Math]::Min(10, $latest.Count)
+            for ($i = 0; $i -lt $maxPosts; $i++) {
+                $lp = $latest[$i]
+                $cap = if ($lp.caption) { [string]$lp.caption } else { '' }
+                if ($cap.Length -gt 600) { $cap = $cap.Substring(0, 600) + '...' }
+                $url = if ($lp.url) { $lp.url } else { "https://www.instagram.com/p/$($lp.shortCode)/" }
+                $out.Add("")
+                $out.Add("### Post $($i+1) - $($lp.shortCode)")
+                $out.Add("$url")
+                $out.Add("")
+                $out.Add($cap)
+            }
+        } else {
+            $out.Add("## Instagram profile @$User`n(no items returned)")
+        }
+    } catch {
+        $out.Add("## Instagram profile @$User`n(apify fetch failed: $($_.Exception.Message))")
+    }
+    return @{ ok = ($out.Count -gt 0); text = ($out -join "`n"); scrape_calls = $calls; snapshot = $items }
+}
+
+# Firecrawl gather: web-search the creator's handle + name + interview keyword, then scrape
+# the top hits. Returns @{ ok; text; scrape_calls; snapshot } (snapshot = array of search hits).
+function Invoke-PilgrimGatherFirecrawl {
+    param(
+        [Parameter(Mandatory)][string]$User,
+        [Parameter(Mandatory)][string]$FirecrawlKey
+    )
+    if ([string]::IsNullOrWhiteSpace($FirecrawlKey)) {
+        return @{ ok = $false; text = "## Web mentions`n(skipped: FIRECRAWL_API_KEY not set)"; scrape_calls = 0; snapshot = @() }
+    }
+    $calls = 0
+    $out = [System.Collections.Generic.List[string]]::new()
+    $hits = @()
+    $fcHeaders = @{ 'Authorization' = "Bearer $FirecrawlKey"; 'Content-Type' = 'application/json' }
+    $queries = @(
+        "@$User interview",
+        "@$User podcast",
+        "$User creator profile"
+    )
+    foreach ($q in $queries) {
+        if ($calls -ge 5) { break }   # local cap inside the Firecrawl job (combined cap enforced by orchestrator)
+        try {
+            $fcBody = @{ query = $q; limit = 3 } | ConvertTo-Json
+            $fcResp = Invoke-RestMethod -Uri 'https://api.firecrawl.dev/v1/search' -Method Post -Headers $fcHeaders -Body $fcBody -TimeoutSec 60 -ErrorAction Stop
+            $calls++
+            if ($fcResp.data) {
+                foreach ($hit in $fcResp.data) {
+                    $title = if ($hit.title) { $hit.title } else { '(no title)' }
+                    $url   = if ($hit.url)   { $hit.url }   else { '(no url)' }
+                    $desc  = if ($hit.description) { $hit.description } else { '' }
+                    $md    = if ($hit.markdown) { $hit.markdown } else { '' }
+                    if ($md.Length -gt 2000) { $md = $md.Substring(0, 2000) + "`n[... truncated ...]" }
+                    $out.Add("### $title")
+                    $out.Add("$url")
+                    $out.Add("$desc")
+                    if ($md) { $out.Add(""); $out.Add($md) }
+                    $hits += @{ query = $q; title = $title; url = $url; description = $desc }
+                }
+            }
+        } catch {
+            $out.Add("### query: $q`n(firecrawl search failed: $($_.Exception.Message))")
+        }
+    }
+    if ($out.Count -eq 0) {
+        return @{ ok = $false; text = "## Web mentions`n(no hits)"; scrape_calls = $calls; snapshot = @() }
+    }
+    $out.Insert(0, "## Web mentions for @$User")
+    return @{ ok = $true; text = ($out -join "`n`n"); scrape_calls = $calls; snapshot = $hits }
+}
+
+# Orchestrator: spin up parallel jobs for Apify + Firecrawl (2 jobs in V1; the locked design
+# left room for 4 but Apify Instagram + Firecrawl web together saturate the 10-call budget
+# fine for one creator). Wait-Job -Timeout, Receive-Job, Remove-Job. Writes raw snapshots
+# under <user>/snapshots/<ts>/ for provenance. Returns @{ corpus; scrape_calls; sources }.
+function Invoke-PilgrimGather {
+    param(
+        [Parameter(Mandatory)][string]$User,
+        [Parameter(Mandatory)][string]$UserDir,
+        [Parameter(Mandatory)][string]$Ts
+    )
+    $apifyToken = $env:APIFY_TOKEN
+    $fcKey      = $env:FIRECRAWL_API_KEY
+
+    Write-Host "  [pilgrim] gather: starting parallel jobs (apify, firecrawl)..." -ForegroundColor DarkGray
+
+    # Apify job - inline the helper body because Start-Job scriptblocks cannot see the parent
+    # function definitions. We pass the script-scope helper's bound parameters in.
+    $jApify = Start-Job -ScriptBlock {
+        param($u, $tok)
+        if ([string]::IsNullOrWhiteSpace($tok)) {
+            return @{ ok = $false; text = "## Apify (Instagram)`n(skipped: APIFY_TOKEN not set)"; scrape_calls = 0; snapshot = @() }
+        }
+        $calls = 0
+        $out = [System.Collections.Generic.List[string]]::new()
+        $items = @()
+        try {
+            $body = @{ usernames = @($u) } | ConvertTo-Json -Depth 4 -Compress
+            $endpoint = 'https://api.apify.com/v2/acts/apify~instagram-profile-scraper/run-sync-get-dataset-items'
+            $headers = @{ Authorization = "Bearer $tok" }
+            $items = Invoke-RestMethod -Uri $endpoint -Method Post -Body $body -ContentType 'application/json' -Headers $headers -TimeoutSec 90
+            $calls++
+            if ($items -and $items.Count -gt 0) {
+                $p = $items[0]
+                $bio = if ($p.biography) { $p.biography } else { '' }
+                $out.Add("## Instagram profile @$u")
+                $out.Add("**Bio:** $bio")
+                if ($p.externalUrl) { $out.Add("**Link:** $($p.externalUrl)") }
+                $latest = if ($p.latestPosts) { $p.latestPosts } elseif ($p.posts) { $p.posts } else { @() }
+                $maxPosts = [Math]::Min(10, $latest.Count)
+                for ($i = 0; $i -lt $maxPosts; $i++) {
+                    $lp = $latest[$i]
+                    $cap = if ($lp.caption) { [string]$lp.caption } else { '' }
+                    if ($cap.Length -gt 600) { $cap = $cap.Substring(0, 600) + '...' }
+                    $url = if ($lp.url) { $lp.url } else { "https://www.instagram.com/p/$($lp.shortCode)/" }
+                    $out.Add("")
+                    $out.Add("### Post $($i+1) - $($lp.shortCode)")
+                    $out.Add($url)
+                    $out.Add("")
+                    $out.Add($cap)
+                }
+            } else {
+                $out.Add("## Instagram profile @$u`n(no items returned)")
+            }
+        } catch {
+            $out.Add("## Instagram profile @$u`n(apify fetch failed: $($_.Exception.Message))")
+        }
+        return @{ ok = ($out.Count -gt 0); text = ($out -join "`n"); scrape_calls = $calls; snapshot = $items }
+    } -ArgumentList $User, $apifyToken
+
+    # Firecrawl job - same inlining rule. Local cap of 3 queries x 3 results = 9 max requests.
+    $jFire = Start-Job -ScriptBlock {
+        param($u, $key)
+        if ([string]::IsNullOrWhiteSpace($key)) {
+            return @{ ok = $false; text = "## Web mentions`n(skipped: FIRECRAWL_API_KEY not set)"; scrape_calls = 0; snapshot = @() }
+        }
+        $calls = 0
+        $out = [System.Collections.Generic.List[string]]::new()
+        $hits = @()
+        $fcHeaders = @{ 'Authorization' = "Bearer $key"; 'Content-Type' = 'application/json' }
+        $queries = @("@$u interview", "@$u podcast", "$u creator profile")
+        foreach ($q in $queries) {
+            if ($calls -ge 5) { break }
+            try {
+                $fcBody = @{ query = $q; limit = 3 } | ConvertTo-Json
+                $fcResp = Invoke-RestMethod -Uri 'https://api.firecrawl.dev/v1/search' -Method Post -Headers $fcHeaders -Body $fcBody -TimeoutSec 60 -ErrorAction Stop
+                $calls++
+                if ($fcResp.data) {
+                    foreach ($hit in $fcResp.data) {
+                        $title = if ($hit.title) { $hit.title } else { '(no title)' }
+                        $url   = if ($hit.url)   { $hit.url }   else { '(no url)' }
+                        $desc  = if ($hit.description) { $hit.description } else { '' }
+                        $md    = if ($hit.markdown) { $hit.markdown } else { '' }
+                        if ($md.Length -gt 2000) { $md = $md.Substring(0, 2000) + "`n[... truncated ...]" }
+                        $out.Add("### $title")
+                        $out.Add($url)
+                        $out.Add($desc)
+                        if ($md) { $out.Add(""); $out.Add($md) }
+                        $hits += @{ query = $q; title = $title; url = $url; description = $desc }
+                    }
+                }
+            } catch {
+                $out.Add("### query: $q`n(firecrawl search failed: $($_.Exception.Message))")
+            }
+        }
+        if ($out.Count -eq 0) {
+            return @{ ok = $false; text = "## Web mentions`n(no hits)"; scrape_calls = $calls; snapshot = @() }
+        }
+        $out.Insert(0, "## Web mentions for @$u")
+        return @{ ok = $true; text = ($out -join "`n`n"); scrape_calls = $calls; snapshot = $hits }
+    } -ArgumentList $User, $fcKey
+
+    # Wait up to PilgrimGatherTimeout (90s); whatever has not finished is reaped.
+    Wait-Job -Job @($jApify, $jFire) -Timeout $Script:PilgrimGatherTimeout | Out-Null
+
+    $rApify = try { Receive-Job $jApify -ErrorAction SilentlyContinue } catch { @{ ok=$false; text='(receive error)'; scrape_calls=0; snapshot=@() } }
+    $rFire  = try { Receive-Job $jFire  -ErrorAction SilentlyContinue } catch { @{ ok=$false; text='(receive error)'; scrape_calls=0; snapshot=@() } }
+    Remove-Job -Job @($jApify, $jFire) -Force -ErrorAction SilentlyContinue
+
+    # Persist snapshots for provenance.
+    $snapRoot = Join-Path $UserDir "snapshots\$Ts"
+    if (-not (Test-Path $snapRoot)) { New-Item -ItemType Directory -Force -Path $snapRoot | Out-Null }
+    if ($rApify -and $rApify.snapshot) {
+        try { ($rApify.snapshot | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath (Join-Path $snapRoot 'apify_instagram.json') -Encoding utf8 } catch {}
+    }
+    if ($rFire -and $rFire.snapshot) {
+        try { ($rFire.snapshot | ConvertTo-Json -Depth 10)  | Set-Content -LiteralPath (Join-Path $snapRoot 'firecrawl_web.json')   -Encoding utf8 } catch {}
+    }
+    # Provenance manifest.
+    $manifest = [ordered]@{
+        ts          = $Ts
+        user        = $User
+        sources     = @(
+            @{ source='apify_instagram_profile_scraper'; ok=$rApify.ok; calls=$rApify.scrape_calls }
+            @{ source='firecrawl_search';                ok=$rFire.ok;  calls=$rFire.scrape_calls }
+        )
+        scrape_calls= ($rApify.scrape_calls + $rFire.scrape_calls)
+    }
+    try { ($manifest | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath (Join-Path $snapRoot 'manifest.json') -Encoding utf8 } catch {}
+
+    $combined = New-Object System.Collections.Generic.List[string]
+    if ($rApify -and $rApify.text) { $combined.Add($rApify.text) }
+    if ($rFire  -and $rFire.text)  { $combined.Add($rFire.text) }
+    $corpus = $combined -join "`n`n"
+
+    return @{
+        corpus       = $corpus
+        scrape_calls = ($rApify.scrape_calls + $rFire.scrape_calls)
+        sources      = @{ apify = @{ ok=$rApify.ok; calls=$rApify.scrape_calls }; firecrawl = @{ ok=$rFire.ok; calls=$rFire.scrape_calls } }
+        any_ok       = ($rApify.ok -or $rFire.ok)
+        snapshot_dir = $snapRoot
+    }
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
