@@ -4581,6 +4581,112 @@ $candBlock
     return @{ fidelities = $fidelities; per_dim = $perDim; judge_model = $judgeModel; self_judged_family = $selfFamily; runs = $runs.Count }
 }
 
+# Score an open prediction for a creator against their actual next post. Non-fatal.
+# Writes <ts>__<hash>.scored.json + appends ledger.jsonl. Triggers a reckoning note on a
+# high-surprise miss. Called from the watchlist hook (one call per creator per run).
+function Invoke-AugurScore {
+    param(
+        [Parameter(Mandatory)][string]$User,
+        [Parameter(Mandatory)]$ActualPost   # watch post object: .caption .shortCode .url
+    )
+    $userDir = Join-Path $Script:AugurRoot $User
+    if (-not (Test-Path $userDir)) { return }   # no bets ever placed for this creator
+
+    # Open prediction = a *.prediction.json with no *.scored.json sibling. Score the OLDEST.
+    $open = Get-ChildItem -Path $userDir -Filter '*.prediction.json' -ErrorAction SilentlyContinue |
+            Where-Object { -not (Test-Path ($_.FullName -replace '\.prediction\.json$', '.scored.json')) } |
+            Sort-Object Name
+    if (-not $open -or @($open).Count -eq 0) { return }
+    $predFile = @($open)[0].FullName
+
+    $actualText = "$($ActualPost.caption)".Trim()
+    if ([string]::IsNullOrWhiteSpace($actualText)) {
+        Write-Host "  [augur] @$User posted but caption empty; leaving bet open." -ForegroundColor DarkGray
+        return
+    }
+
+    $pred = Get-Content $predFile -Raw -Encoding utf8 | ConvertFrom-Json
+
+    # Build candidates: 5 hypotheses + baseline, opaque shuffled labels (blinding).
+    $labels = @('Q','W','E','R','T','Y','U','I') | Get-Random -Count ((@($pred.hypotheses).Count) + 1)
+    $li = 0
+    $candidates = New-Object System.Collections.Generic.List[object]
+    $labelMap = @{}   # label -> @{ kind; id; prob } (id=-1 for baseline)
+    foreach ($h in $pred.hypotheses) {
+        $lbl = $labels[$li]; $li++
+        $candidates.Add(@{ label = $lbl; facets = $h.facets })
+        $labelMap[$lbl] = @{ kind = "$($h.kind)"; id = [int]$h.id; prob = [double]$h.probability }
+    }
+    $baseLbl = $labels[$li]
+    $candidates.Add(@{ label = $baseLbl; facets = $pred.baseline.facets })
+    $labelMap[$baseLbl] = @{ kind = 'baseline'; id = -1; prob = 1.0 }
+
+    $judge = Invoke-AugurJudge -ActualText $actualText -Candidates ($candidates.ToArray())
+    if (-not $judge) {
+        Write-Host "  [augur] no judge available (codex/ANTHROPIC_API_KEY); scoring @$User deferred." -ForegroundColor DarkGray
+        return
+    }
+
+    # Best-matching hypothesis (exclude baseline). Baseline fidelity = the null model.
+    $bestLbl = $null; $bestFid = -1.0
+    foreach ($lbl in $judge.fidelities.Keys) {
+        if ($labelMap[$lbl].kind -eq 'baseline') { continue }
+        if ($judge.fidelities[$lbl] -gt $bestFid) { $bestFid = $judge.fidelities[$lbl]; $bestLbl = $lbl }
+    }
+    $baselineFid = [double]$judge.fidelities[$baseLbl]
+    $best = $labelMap[$bestLbl]
+
+    # If even the best hypothesis is a weak match (<0.4), the post landed in "other".
+    $landedOther = ($bestFid -lt 0.4)
+    $assignedProb = if ($landedOther) { [double]$pred.residual_other } else { $best.prob }
+
+    # Metrics (natural log). p clamped to epsilon to avoid -log(0).
+    $pModel = [math]::Max($assignedProb * [math]::Max($bestFid, 0.0), $Script:AugurEpsilon)
+    $pBase  = [math]::Max($baselineFid, $Script:AugurEpsilon)
+    $surprise   = [math]::Round(-[math]::Log($pModel), 4)
+    $innovation = [math]::Round(-[math]::Log($pBase), 4)
+    $skill      = [math]::Round($innovation - $surprise, 4)   # >0 = Augur beat the baseline
+
+    $scoredObj = [ordered]@{
+        user               = $User
+        scored_at          = (Get-Date).ToString('o')
+        prediction_file    = (Split-Path -Leaf $predFile)
+        actual_shortcode   = "$($ActualPost.shortCode)"
+        actual_url         = "$($ActualPost.url)"
+        judge_model        = $judge.judge_model
+        self_judged_family = $judge.self_judged_family
+        rubric_version     = $Script:AugurRubricVersion
+        judge_runs         = $judge.runs
+        landed_other       = $landedOther
+        best_hypothesis    = @{ kind = $best.kind; id = $best.id; probability = $best.prob; fidelity = $bestFid }
+        baseline_fidelity  = $baselineFid
+        assigned_prob      = $assignedProb
+        metrics            = @{ surprise = $surprise; innovation = $innovation; skill = $skill }
+        per_dimension      = $judge.per_dim
+    }
+    $scoredPath = $predFile -replace '\.prediction\.json$', '.scored.json'
+    Write-AtomicFile -Path $scoredPath -Content ($scoredObj | ConvertTo-Json -Depth 8)
+
+    # Append compact ledger line.
+    $ledger = Join-Path $userDir 'ledger.jsonl'
+    $ledgerLine = [ordered]@{
+        scored_at=$scoredObj.scored_at; shortcode=$scoredObj.actual_shortcode
+        kind=$best.kind; id=$best.id; assigned_prob=$assignedProb; best_fidelity=$bestFid
+        baseline_fidelity=$baselineFid; surprise=$surprise; innovation=$innovation; skill=$skill
+        judge_model=$judge.judge_model
+    } | ConvertTo-Json -Compress
+    Add-Content -Path $ledger -Value $ledgerLine -Encoding utf8
+
+    Write-Host "  [augur] @$User scored: surprise=$surprise innovation=$innovation skill=$skill (best=$($best.kind) p=$assignedProb fid=$bestFid)" -ForegroundColor Green
+
+    # Reckoning trigger: a low-probability hypothesis / 'other' landed AND it was genuinely
+    # novel for the creator (innovation high). That's the creator doing something new.
+    if (($landedOther -or $best.kind -in @('anti','wildcard')) -and $innovation -gt 1.9) {
+        try { Invoke-AugurReckoning -User $User -Pred $pred -ActualText $actualText -BestKind $best.kind -AssignedProb $assignedProb }
+        catch { Write-Warning "[augur] reckoning note failed: $($_.Exception.Message)" }
+    }
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
