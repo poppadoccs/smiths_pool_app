@@ -5149,6 +5149,92 @@ function Invoke-PilgrimGather {
     }
 }
 
+# Distill the scraped corpus + existing signature into research-dossier.md + adjacency
+# candidates via a SINGLE combined claude call. One retry on JSON parse failure (counts
+# against the 2-claude-call budget). Returns @{ markdown; candidates; claude_calls; ok }
+# or @{ ok=$false; partial_markdown=<raw>; claude_calls=N } on irrecoverable failure.
+function Invoke-PilgrimDistill {
+    param(
+        [Parameter(Mandatory)][string]$User,
+        [Parameter(Mandatory)][string]$SignatureText,
+        [string]$ExistingDossier = '',
+        [Parameter(Mandatory)][string]$ScrapedCorpus,
+        [switch]$DiscoverAdjacent
+    )
+    $prompt = Get-PilgrimDistillPrompt -User $User -SignatureText $SignatureText `
+              -ExistingDossier $ExistingDossier -ScrapedCorpus $ScrapedCorpus `
+              -DiscoverAdjacent:$DiscoverAdjacent
+
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    $haveNative = [bool]$env:ANTHROPIC_API_KEY -and [bool](Get-Command python -ErrorAction SilentlyContinue)
+    if (-not $claudeCmd -and -not $haveNative) {
+        Write-Warning "[pilgrim] need claude CLI or ANTHROPIC_API_KEY+python to distill."
+        return @{ ok = $false; markdown = ''; candidates = @(); claude_calls = 0; partial_markdown = '' }
+    }
+
+    $callOnce = {
+        param($p)
+        if ($claudeCmd) {
+            try {
+                return ($p | & claude --dangerously-skip-permissions --model $Script:PilgrimGenModel -p --add-dir $Script:VideoMemRoot 2>&1) -join "`n"
+            } catch {
+                Write-Warning "[pilgrim] claude distill threw: $($_.Exception.Message)"
+                return $null
+            }
+        } else {
+            return Invoke-NativeAugurText -Prompt $p -Model $Script:PilgrimGenModel
+        }
+    }
+
+    $calls = 0
+    $raw = & $callOnce $prompt
+    $calls++
+    $parsed = ConvertFrom-AugurJson -Text $raw
+    $needsRetry = (-not $parsed) -or (-not $parsed.research_dossier_markdown) -or [string]::IsNullOrWhiteSpace($parsed.research_dossier_markdown)
+
+    if ($needsRetry -and $calls -lt $Script:PilgrimMaxClaudeCalls) {
+        Write-Host "  [pilgrim] distill JSON unparseable; retrying once..." -ForegroundColor DarkYellow
+        $retryPrompt = $prompt + "`n`nIMPORTANT: your previous attempt did not return valid JSON. Emit ONLY the JSON object. No prose, no fences, no commentary."
+        $raw = & $callOnce $retryPrompt
+        $calls++
+        $parsed = ConvertFrom-AugurJson -Text $raw
+    }
+
+    if (-not $parsed -or -not $parsed.research_dossier_markdown -or [string]::IsNullOrWhiteSpace($parsed.research_dossier_markdown)) {
+        # Failed twice. Surface whatever raw text the model returned so the caller can write
+        # research-dossier.md.partial for human review.
+        $partial = if ($raw) { [string]$raw } else { '' }
+        return @{ ok = $false; markdown = ''; candidates = @(); claude_calls = $calls; partial_markdown = $partial }
+    }
+
+    $candidates = @()
+    if ($parsed.adjacency_candidates) {
+        foreach ($c in $parsed.adjacency_candidates) {
+            if (-not $c.handle) { continue }
+            $rel = 0.0
+            try { $rel = [double]$c.relevance } catch { $rel = 0.0 }
+            if ($rel -lt $Script:PilgrimAdjacencyThreshold) { continue }
+            $candidates += @{
+                handle    = ($c.handle -replace '^@','')
+                relevance = [math]::Round($rel, 3)
+                reason    = "$($c.reason)".Trim()
+            }
+        }
+        # Cap at top-K by relevance descending.
+        if ($candidates.Count -gt $Script:PilgrimAdjacencyTopK) {
+            $candidates = @($candidates | Sort-Object { -$_.relevance } | Select-Object -First $Script:PilgrimAdjacencyTopK)
+        }
+    }
+
+    return @{
+        ok            = $true
+        markdown      = [string]$parsed.research_dossier_markdown
+        candidates    = $candidates
+        claude_calls  = $calls
+        partial_markdown = ''
+    }
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
