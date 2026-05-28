@@ -183,6 +183,15 @@ param(
     # Default 5. Lower = more items, higher = stricter.
     [int]$NoveltyMin = 5,
 
+    # Augur: self-scoring prediction oracle. "-Augur <user>" places a probabilistic bet on
+    # that creator's next post; it is scored automatically when the watchlist next catches
+    # them posting (codex judges blindly, different model family).
+    [string]$Augur,
+
+    # Render the Augur leaderboard (creators ranked by skill-adjusted surprise). Separate
+    # switch because a [string] param cannot be passed bare in PowerShell.
+    [switch]$AugurBoard,
+
     [switch]$Help
 )
 
@@ -212,6 +221,8 @@ $ErrorActionPreference = 'Stop'
 #  60  -MetaPipe: claude CLI absent and ANTHROPIC_API_KEY not set
 #  61  -MetaPipe: all source fetches returned empty output
 #  62  -InstallMetaTask: Register-ScheduledTask failed (likely needs admin)
+#  63  -Augur <user>: no signature found (run -AnalyzeCreator first)
+#  64  -AugurBoard: no Augur events logged yet
 # =============================================================================
 
 # =============================================================================
@@ -262,6 +273,10 @@ FLAGS:
   -InstallMetaTask       Helper: register Windows Scheduled Task for -MetaPipe daily.
                          Use with -Time HH:mm (default 07:00).
   -NoveltyMin <N>        Minimum novelty score (1-10) for MetaPipe items. Default 5.
+  -Augur <user>          Mode: place a probabilistic prediction bet on <user>'s next post.
+                         Scored automatically by the watchlist (codex/GPT judges blindly).
+                         Needs a signature (run -AnalyzeCreator <user> first).
+  -AugurBoard            Mode: render the Augur leaderboard (creators ranked by surprise).
   -Help             Print this help
 
 OPTIONAL ENVIRONMENT VARIABLES:
