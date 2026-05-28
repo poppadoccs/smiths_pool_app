@@ -5623,6 +5623,26 @@ if ($MetaPipe) {
     exit 0
 }
 
+# Mode 0g: -AugurBoard — render the Augur leaderboard.
+if ($AugurBoard) {
+    if (Invoke-AugurLeaderboard) { exit 0 } else { exit 64 }
+}
+
+# Mode 0h: -Augur <user> — place a probabilistic prediction bet on a creator's next post.
+if ($Augur) {
+    $cleanAugurUser = $Augur -replace '^@',''
+    $augSigPath = Join-Path $Script:VideoMemRoot "ARCHIVE\SIGNATURES\$cleanAugurUser.md"
+    if (-not (Test-Path $augSigPath)) {
+        Write-Error "No signature for @$cleanAugurUser at $augSigPath. Run -AnalyzeCreator $cleanAugurUser first (needs 3+ dossiers)."
+        exit 63
+    }
+    if (-not (Invoke-AugurPredict -User $cleanAugurUser -SignaturePath $augSigPath)) {
+        Write-Error "[augur] prediction failed for @$cleanAugurUser."
+        exit 1
+    }
+    exit 0
+}
+
 # Mode 1: -InstallWatchTask
 if ($InstallWatchTask) {
     Install-WatchTask -WatchInput $Watch -TimeStr $Time
