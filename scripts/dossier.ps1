@@ -4316,6 +4316,46 @@ function Invoke-WatchlistRun {
     }
 }
 
+# =============================================================================
+# AUGUR — self-scoring prediction oracle.
+# Claude forecasts a creator's next post as a probability distribution; codex (a
+# different model family) judges the real post against it, blinded; we track
+# surprise / innovation / skill per creator. Misses against the creator's own
+# baseline are the signal. All records are versioned + written atomically.
+# =============================================================================
+$Script:AugurRoot             = Join-Path $Script:VideoMemRoot 'ARCHIVE\AUGUR'
+$Script:AugurGenModel         = 'claude-sonnet-4-6'            # prediction generator (Claude)
+$Script:AugurJudgeModel       = 'gpt-5.3-codex-spark'          # judge (codex CLI; different family)
+$Script:AugurJudgeEffort      = 'medium'                       # codex reasoning effort for judging
+$Script:AugurNativeJudgeModel = 'claude-haiku-4-5-20251001'    # degraded judge (different model, flagged)
+$Script:AugurPromptVersion    = 'augur-predict-v1'
+$Script:AugurRubricVersion    = 'augur-rubric-v1'
+$Script:AugurEpsilon          = 0.01                           # probability floor (avoids -log 0)
+# Rubric weights (sum 1.0). Source: contrarian design review (hook+angle carry most signal).
+$Script:AugurRubricWeights    = @{ hook=0.20; format=0.15; angle=0.20; voice=0.15; topic=0.15; absences=0.15 }
+
+# Write a whole file atomically: write to <path>.tmp, then rename over the target.
+# Prevents a half-written prediction/score JSON on an interrupted run.
+function Write-AtomicFile {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Content)
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    $tmp = "$Path.tmp"
+    Set-Content -Path $tmp -Value $Content -Encoding utf8
+    Move-Item -Force -Path $tmp -Path $Path
+}
+
+# Extract the first JSON object from possibly-noisy model stdout (strips ```json fences and
+# any prose before/after). Returns a PSCustomObject or $null.
+function ConvertFrom-AugurJson {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $clean = $Text -replace '(?s)```json\s*', '' -replace '(?s)```\s*', ''
+    $m = [regex]::Match($clean, '(?s)\{.*\}')
+    if (-not $m.Success) { return $null }
+    try { return ($m.Value | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
