@@ -4403,7 +4403,8 @@ function ConvertFrom-AugurJson {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
     $clean = $Text -replace '(?s)```json\s*', '' -replace '(?s)```\s*', ''
-    $m = [regex]::Match($clean, '(?s)\{.*\}')
+    $balanced = '(?s)\{(?:[^{}"]|"(?:[^"\\]|\\.)*"|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\}'
+    $m = [regex]::Match($clean, $balanced)
     if (-not $m.Success) { return $null }
     try { return ($m.Value | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
 }
@@ -5397,7 +5398,7 @@ function Invoke-PilgrimRun {
     # Phase 3/3: write.
     Write-Host "[3/3] write research-dossier.md ..." -ForegroundColor Cyan
     $dossierPath = Invoke-PilgrimWriteDossier -UserDir $userDir -Ts $ts -RunSummary $runSummary `
-                   -DossierMarkdown $distill.markdown -Candidates $distill.candidates
+                   -DossierMarkdown $distill.markdown -Candidates $(if ($DiscoverAdjacent) { $distill.candidates } else { @() })
 
     Write-Host ""
     Write-Host "Pilgrim cycle complete:" -ForegroundColor Green
