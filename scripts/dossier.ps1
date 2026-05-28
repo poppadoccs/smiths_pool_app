@@ -6325,6 +6325,17 @@ if ($Augur) {
     exit 0
 }
 
+# Mode 0i: -Pilgrim <user> — workflow-first research cycle for one creator.
+if ($Pilgrim) {
+    $rc = Invoke-PilgrimRun -User $Pilgrim -DiscoverAdjacent:$DiscoverAdjacent
+    exit $rc
+}
+
+# Mode 0j: -PilgrimCandidates — render rolled-up adjacency proposals.
+if ($PilgrimCandidates) {
+    if (Invoke-PilgrimCandidatesRender) { exit 0 } else { exit 64 }
+}
+
 # Mode 1: -InstallWatchTask
 if ($InstallWatchTask) {
     Install-WatchTask -WatchInput $Watch -TimeStr $Time
