@@ -883,6 +883,23 @@ function Update-CreatorSignature {
     # Build folder list for the prompt
     $folderList = ($userDossiers | ForEach-Object { $_.Folder }) -join "`n"
 
+    # Pilgrim integration: if a research-dossier.md exists for this user, fold it in as a
+    # second source of truth alongside the per-dossier BRIEFs and RECIPEs. The research
+    # dossier captures cross-platform + web-mention signal that the per-post dossiers miss.
+    $researchPath = Join-Path $Script:VideoMemRoot "ARCHIVE\PILGRIM\$Username\research-dossier.md"
+    $researchSection = ''
+    if (Test-Path $researchPath) {
+        $researchSection = @"
+
+
+ADDITIONAL SOURCE - Pilgrim research dossier at ${researchPath}:
+This file is a living synthesis of cross-platform + web-mention research for @$Username,
+written by a separate Pilgrim cycle. Read it and weave its observations into the synthesis
+below alongside the per-post dossiers. Where Pilgrim's claims and the per-post evidence
+disagree, prefer the per-post evidence and note the tension inline.
+"@
+    }
+
     $prompt = @"
 You are synthesizing a creator signature file. There are $($userDossiers.Count) dossiers for @$Username. For each dossier folder below, read its BRIEF.md and RECIPE.md (if present), then write a synthesis to $sigPath with these sections:
 
@@ -903,7 +920,7 @@ The 1-2 things that make their work instantly recognizable. The thing they own.
 What they DON'T do that you'd expect a creator in this lane to do. Restraint or gap.
 
 Dossier folders to read:
-$folderList
+$folderList$researchSection
 
 OVERWRITE $sigPath with the result. Be specific, not generic. Quote phrasings if useful. No bullet-list dumps — paragraphs that read.
 "@
