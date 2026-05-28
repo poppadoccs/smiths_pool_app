@@ -4275,6 +4275,14 @@ function Invoke-WatchlistRun {
         } else {
             Write-Host "  Some posts failed; cursor not advanced (will retry next run)." -ForegroundColor Yellow
         }
+
+        # AUGUR: score any open prediction for this creator against their actual next post
+        # ($newPosts[-1] = oldest new post = the first one after the bet was placed).
+        # Non-fatal - a scoring failure must NEVER break the watchlist run.
+        if ($newPosts.Count -gt 0) {
+            try { Invoke-AugurScore -User $u -ActualPost $newPosts[-1] }
+            catch { Write-Warning "[augur] scoring @$u failed: $($_.Exception.Message)" }
+        }
     }
 
     # Persist the watchlist cache
