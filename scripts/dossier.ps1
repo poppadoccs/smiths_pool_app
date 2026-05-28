@@ -5288,6 +5288,110 @@ function Invoke-PilgrimWriteDossier {
     return $dossierPath
 }
 
+# Top-level Pilgrim run for one creator. Validates signature, gates the budget, drives
+# gather -> distill -> write. Returns an exit code suggestion (caller's dispatch uses it):
+#   0  = success (research-dossier.md written)
+#  65  = no signature for user
+#  66  = budget exceeded without a usable dossier (partial may have been written)
+#  67  = all scrape sources failed
+#   1  = catch-all (e.g., distill failed irrecoverably even within budget)
+function Invoke-PilgrimRun {
+    param(
+        [Parameter(Mandatory)][string]$User,
+        [switch]$DiscoverAdjacent
+    )
+    $cleanUser = $User -replace '^@',''
+    $sigPath = Join-Path $Script:VideoMemRoot "ARCHIVE\SIGNATURES\$cleanUser.md"
+    if (-not (Test-Path $sigPath)) {
+        [Console]::Error.WriteLine("[pilgrim] No signature for @$cleanUser at $sigPath. Run -AnalyzeCreator $cleanUser first (needs 3+ dossiers).")
+        return 65
+    }
+    $sigText = Get-Content -LiteralPath $sigPath -Raw -Encoding utf8
+    if ([string]::IsNullOrWhiteSpace($sigText)) {
+        [Console]::Error.WriteLine("[pilgrim] Signature for @$cleanUser is empty: $sigPath.")
+        return 65
+    }
+
+    $userDir = Join-Path $Script:PilgrimRoot $cleanUser
+    if (-not (Test-Path $userDir)) { New-Item -ItemType Directory -Force -Path $userDir | Out-Null }
+    $existingPath = Join-Path $userDir 'research-dossier.md'
+    $existing = if (Test-Path $existingPath) { Get-Content -LiteralPath $existingPath -Raw -Encoding utf8 } else { '' }
+
+    $ts = Get-Date -Format 'yyyy-MM-ddTHHmmss'
+    $wallStart = Get-Date
+
+    Write-Host ""
+    Write-Host "=== Pilgrim cycle: @$cleanUser ($ts) ===" -ForegroundColor Cyan
+    Write-Host "  budget: $($Script:PilgrimWallBudgetSec)s wall, <= $($Script:PilgrimMaxScrapeCalls) scrape, <= $($Script:PilgrimMaxClaudeCalls) claude" -ForegroundColor DarkGray
+    if ($DiscoverAdjacent) { Write-Host "  adjacency: ENABLED (top-$($Script:PilgrimAdjacencyTopK) above $($Script:PilgrimAdjacencyThreshold))" -ForegroundColor DarkGray }
+
+    # Phase 1/3: gather (parallel jobs, Wait-Job timeout already applied internally).
+    Write-Host "[1/3] gather (apify + firecrawl)..." -ForegroundColor Cyan
+    $gather = Invoke-PilgrimGather -User $cleanUser -UserDir $userDir -Ts $ts
+    $usedSec = ((Get-Date) - $wallStart).TotalSeconds
+    Write-Host ("  gather done: scrape_calls={0} apify={1} firecrawl={2} corpus={3} chars wall={4:n1}s" -f `
+                $gather.scrape_calls, $gather.sources.apify.ok, $gather.sources.firecrawl.ok, $gather.corpus.Length, $usedSec) -ForegroundColor DarkGray
+
+    if (-not $gather.any_ok -or [string]::IsNullOrWhiteSpace($gather.corpus)) {
+        [Console]::Error.WriteLine("[pilgrim] All scrape sources failed. Check APIFY_TOKEN / FIRECRAWL_API_KEY / network.")
+        return 67
+    }
+
+    # Budget check before paying for claude.
+    if ($usedSec -ge $Script:PilgrimWallBudgetSec) {
+        [Console]::Error.WriteLine("[pilgrim] Budget exceeded ($([int]$usedSec)s) before distill could start.")
+        return 66
+    }
+    if ($gather.scrape_calls -gt $Script:PilgrimMaxScrapeCalls) {
+        Write-Warning "[pilgrim] scrape_calls=$($gather.scrape_calls) exceeded cap $($Script:PilgrimMaxScrapeCalls); proceeding with collected corpus."
+    }
+
+    # Phase 2/3: distill (claude combined call + 1 retry).
+    Write-Host "[2/3] distill (single combined claude call)..." -ForegroundColor Cyan
+    $distill = Invoke-PilgrimDistill -User $cleanUser -SignatureText $sigText `
+               -ExistingDossier $existing -ScrapedCorpus $gather.corpus `
+               -DiscoverAdjacent:$DiscoverAdjacent
+    $usedSec = ((Get-Date) - $wallStart).TotalSeconds
+    Write-Host ("  distill done: ok={0} claude_calls={1} markdown={2} chars candidates={3} wall={4:n1}s" -f `
+                $distill.ok, $distill.claude_calls, $distill.markdown.Length, $distill.candidates.Count, $usedSec) -ForegroundColor DarkGray
+
+    $runSummary = @{
+        ok               = [bool]$distill.ok
+        scrape_calls     = [int]$gather.scrape_calls
+        claude_calls     = [int]$distill.claude_calls
+        budget_used_sec  = [int]$usedSec
+        sources          = $gather.sources
+        candidates_count = [int]$distill.candidates.Count
+    }
+
+    if (-not $distill.ok) {
+        # Write partial if there is anything to keep.
+        if (-not [string]::IsNullOrWhiteSpace($distill.partial_markdown)) {
+            $partialPath = Invoke-PilgrimWriteDossier -UserDir $userDir -Ts $ts -RunSummary $runSummary `
+                           -DossierMarkdown $distill.partial_markdown -Candidates @() -Partial
+            [Console]::Error.WriteLine("[pilgrim] distill failed; partial written: $partialPath")
+        } else {
+            [Console]::Error.WriteLine("[pilgrim] distill failed and no recoverable output.")
+        }
+        # Distinguish budget-exceeded from generic distill failure.
+        if ($usedSec -ge $Script:PilgrimWallBudgetSec) { return 66 } else { return 1 }
+    }
+
+    # Phase 3/3: write.
+    Write-Host "[3/3] write research-dossier.md ..." -ForegroundColor Cyan
+    $dossierPath = Invoke-PilgrimWriteDossier -UserDir $userDir -Ts $ts -RunSummary $runSummary `
+                   -DossierMarkdown $distill.markdown -Candidates $distill.candidates
+
+    Write-Host ""
+    Write-Host "Pilgrim cycle complete:" -ForegroundColor Green
+    Write-Host "  $dossierPath" -ForegroundColor Green
+    if ($distill.candidates.Count -gt 0) {
+        Write-Host "  $($distill.candidates.Count) adjacency candidate(s) appended to candidates.jsonl" -ForegroundColor DarkGray
+    }
+    Write-Host "  next: run -AnalyzeCreator $cleanUser to fold this into the signature." -ForegroundColor DarkGray
+    return 0
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
