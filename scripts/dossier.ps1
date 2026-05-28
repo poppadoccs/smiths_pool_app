@@ -4349,8 +4349,8 @@ function Write-AtomicFile {
     $dir = Split-Path -Parent $Path
     if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
     $tmp = "$Path.tmp"
-    Set-Content -Path $tmp -Value $Content -Encoding utf8
-    Move-Item -Force -Path $tmp -Path $Path
+    Set-Content -LiteralPath $tmp -Value $Content -Encoding utf8
+    Move-Item -Force -LiteralPath $tmp -Destination $Path
 }
 
 # Extract the first JSON object from possibly-noisy model stdout (strips ```json fences and
@@ -4430,7 +4430,8 @@ function Invoke-AugurPredict {
 
     $forecast = ConvertFrom-AugurJson -Text $raw
     if (-not $forecast -or -not $forecast.hypotheses -or @($forecast.hypotheses).Count -lt 1) {
-        Write-Warning "[augur] forecast JSON unparseable or empty. Raw: $($raw.Substring(0,[Math]::Min(200,$raw.Length)))"
+        $rawPreview = if ([string]::IsNullOrEmpty($raw)) { '<empty>' } else { $raw.Substring(0, [Math]::Min(200, $raw.Length)) }
+        Write-Warning "[augur] forecast JSON unparseable or empty. Raw: $rawPreview"
         return $false
     }
 
