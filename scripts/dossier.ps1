@@ -192,6 +192,20 @@ param(
     # switch because a [string] param cannot be passed bare in PowerShell.
     [switch]$AugurBoard,
 
+    # Pilgrim: workflow-first research cycle. "-Pilgrim <user>" goes out for one creator —
+    # scrapes recent cross-platform posts + web mentions, distills into a living
+    # research-dossier.md. Sharpens the substrate Update-CreatorSignature synthesizes from.
+    [string]$Pilgrim,
+
+    # Render PILGRIM-CANDIDATES.md (rolled-up adjacent-creator proposals across all Pilgrim
+    # users). Separate switch — same PowerShell constraint as -AugurBoard.
+    [switch]$PilgrimCandidates,
+
+    # Enable the adjacency-gate step in a Pilgrim run. Default off; opt-in per-run.
+    # When set, the distill call also emits adjacency_candidates which append to
+    # <user>/candidates.jsonl for human review.
+    [switch]$DiscoverAdjacent,
+
     [switch]$Help
 )
 
@@ -223,6 +237,10 @@ $ErrorActionPreference = 'Stop'
 #  62  -InstallMetaTask: Register-ScheduledTask failed (likely needs admin)
 #  63  -Augur <user>: no signature found (run -AnalyzeCreator first)
 #  64  -AugurBoard: no Augur events logged yet
+#  65  -Pilgrim <user>: no signature for user (run -AnalyzeCreator first)
+#  66  -Pilgrim <user>: budget exceeded without producing a usable dossier
+#       (a research-dossier.md.partial may have been written for human review)
+#  67  -Pilgrim <user>: all scrape sources failed (no API key or all network failures)
 # =============================================================================
 
 # =============================================================================
@@ -277,6 +295,15 @@ FLAGS:
                          Scored automatically by the watchlist (codex/GPT judges blindly).
                          Needs a signature (run -AnalyzeCreator <user> first).
   -AugurBoard            Mode: render the Augur leaderboard (creators ranked by surprise).
+  -Pilgrim <user>        Mode: research cycle for <user>. Scrapes cross-platform posts +
+                         web mentions, distills into research-dossier.md (artifact read by
+                         -AnalyzeCreator next time you re-synthesize the signature).
+                         Needs a signature (run -AnalyzeCreator <user> first).
+  -PilgrimCandidates     Mode: render PILGRIM-CANDIDATES.md (rolled-up adjacent-creator
+                         proposals across all Pilgrim creators).
+  -DiscoverAdjacent      Modifier for -Pilgrim: enable the adjacency-gate step (default
+                         off). Top-3 candidates above 0.5 relevance append to
+                         <user>/candidates.jsonl for human review.
   -Help             Print this help
 
 OPTIONAL ENVIRONMENT VARIABLES:
