@@ -5235,6 +5235,59 @@ function Invoke-PilgrimDistill {
     }
 }
 
+# Write research-dossier.md atomically, append a runs.jsonl summary, and (if -DiscoverAdjacent)
+# append candidates to <user>/candidates.jsonl. Never blocks on a missing dir - creates as
+# needed. Returns the path of the written dossier on success.
+function Invoke-PilgrimWriteDossier {
+    param(
+        [Parameter(Mandatory)][string]$UserDir,
+        [Parameter(Mandatory)][string]$Ts,
+        [Parameter(Mandatory)][hashtable]$RunSummary,    # @{ scrape_calls; claude_calls; sources; budget_used_sec; candidates_count; ok }
+        [Parameter(Mandatory)][string]$DossierMarkdown,
+        [array]$Candidates = @(),
+        [switch]$Partial
+    )
+    if (-not (Test-Path $UserDir)) { New-Item -ItemType Directory -Force -Path $UserDir | Out-Null }
+
+    $dossierPath = if ($Partial) {
+        Join-Path $UserDir 'research-dossier.md.partial'
+    } else {
+        Join-Path $UserDir 'research-dossier.md'
+    }
+    Write-AtomicFile -Path $dossierPath -Content $DossierMarkdown
+
+    # Append runs.jsonl - one compact line per cycle for audit.
+    $runsPath = Join-Path $UserDir 'runs.jsonl'
+    $line = [ordered]@{
+        ts               = $Ts
+        ok               = [bool]$RunSummary.ok
+        partial          = [bool]$Partial
+        scrape_calls     = [int]$RunSummary.scrape_calls
+        claude_calls     = [int]$RunSummary.claude_calls
+        budget_used_sec  = [int]$RunSummary.budget_used_sec
+        sources          = $RunSummary.sources
+        candidates_count = [int]$RunSummary.candidates_count
+        dossier_file     = (Split-Path -Leaf $dossierPath)
+    } | ConvertTo-Json -Compress -Depth 5
+    Add-Content -LiteralPath $runsPath -Value $line -Encoding utf8
+
+    # Append candidates.jsonl - only when -DiscoverAdjacent provided candidates.
+    if ($Candidates -and $Candidates.Count -gt 0) {
+        $candPath = Join-Path $UserDir 'candidates.jsonl'
+        foreach ($c in $Candidates) {
+            $cl = [ordered]@{
+                proposed_at = $Ts
+                handle      = "$($c.handle)"
+                relevance   = [double]$c.relevance
+                reason      = "$($c.reason)"
+            } | ConvertTo-Json -Compress
+            Add-Content -LiteralPath $candPath -Value $cl -Encoding utf8
+        }
+    }
+
+    return $dossierPath
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
