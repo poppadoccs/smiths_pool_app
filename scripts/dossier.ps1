@@ -5392,6 +5392,65 @@ function Invoke-PilgrimRun {
     return 0
 }
 
+# Render PILGRIM-CANDIDATES.md: a rolled-up table of every adjacency candidate proposed
+# across all Pilgrim users. Sorted by relevance descending, deduped by handle.
+# Auto-opens unless -NoOpen (mirrors Invoke-AugurLeaderboard).
+function Invoke-PilgrimCandidatesRender {
+    if (-not (Test-Path $Script:PilgrimRoot)) {
+        Write-Host "No Pilgrim data yet ($Script:PilgrimRoot)." -ForegroundColor Yellow
+        return $false
+    }
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($dir in (Get-ChildItem -Path $Script:PilgrimRoot -Directory -ErrorAction SilentlyContinue)) {
+        $candPath = Join-Path $dir.FullName 'candidates.jsonl'
+        if (-not (Test-Path $candPath)) { continue }
+        $events = @(Get-Content -LiteralPath $candPath -Encoding utf8 | Where-Object { $_.Trim() } | ForEach-Object {
+            try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ })
+        foreach ($e in $events) {
+            $rows.Add([pscustomobject]@{
+                ProposedBy = $dir.Name
+                Handle     = "$($e.handle)"
+                Relevance  = [double]$e.relevance
+                Reason     = "$($e.reason)"
+                ProposedAt = "$($e.proposed_at)"
+            })
+        }
+    }
+    if ($rows.Count -eq 0) {
+        Write-Host "No Pilgrim candidates proposed yet." -ForegroundColor Yellow
+        return $false
+    }
+
+    # Dedup by handle keeping highest-relevance row.
+    $grouped = $rows | Group-Object Handle | ForEach-Object {
+        $_.Group | Sort-Object Relevance -Descending | Select-Object -First 1
+    }
+    $ranked = $grouped | Sort-Object Relevance -Descending
+
+    $md = New-Object System.Collections.Generic.List[string]
+    $md.Add("# Pilgrim Candidates")
+    $md.Add("")
+    $md.Add("_Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm'). Adjacency proposals from all Pilgrim runs. Deduped by handle (highest relevance kept)._")
+    $md.Add("")
+    $md.Add("| Handle | Relevance | Proposed by | Reason | Proposed at |")
+    $md.Add("|---|---|---|---|---|")
+    foreach ($r in $ranked) {
+        $reason = ($r.Reason -replace '\|','\|') -replace "`r?`n",' '
+        $md.Add("| @$($r.Handle) | $([math]::Round($r.Relevance,2)) | @$($r.ProposedBy) | $reason | $($r.ProposedAt) |")
+    }
+
+    $outPath = Join-Path $Script:PilgrimRoot 'PILGRIM-CANDIDATES.md'
+    Write-AtomicFile -Path $outPath -Content ($md -join "`n")
+    Write-Host "Pilgrim candidates rendered:" -ForegroundColor Green
+    Write-Host "  $outPath" -ForegroundColor Green
+    if (-not $NoOpen -and (Test-Path $outPath)) {
+        $browser = Get-DefaultBrowserExe
+        if ($browser) { try { Start-Process -FilePath $browser -ArgumentList "`"$outPath`"" } catch {} }
+        else { try { Start-Process $outPath } catch {} }
+    }
+    return $true
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
