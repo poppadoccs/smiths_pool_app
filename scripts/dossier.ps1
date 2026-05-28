@@ -4425,7 +4425,7 @@ function Invoke-AugurPredict {
     } elseif ($env:ANTHROPIC_API_KEY) {
         $raw = Invoke-NativeAugurText -Prompt $prompt -Model $Script:AugurGenModel
     } else {
-        Write-Error "[augur] need claude CLI or ANTHROPIC_API_KEY to forecast."; return $false
+        [Console]::Error.WriteLine("[augur] need claude CLI or ANTHROPIC_API_KEY to forecast."); return $false
     }
 
     $forecast = ConvertFrom-AugurJson -Text $raw
@@ -5633,11 +5633,11 @@ if ($Augur) {
     $cleanAugurUser = $Augur -replace '^@',''
     $augSigPath = Join-Path $Script:VideoMemRoot "ARCHIVE\SIGNATURES\$cleanAugurUser.md"
     if (-not (Test-Path $augSigPath)) {
-        Write-Error "No signature for @$cleanAugurUser at $augSigPath. Run -AnalyzeCreator $cleanAugurUser first (needs 3+ dossiers)."
+        [Console]::Error.WriteLine("No signature for @$cleanAugurUser at $augSigPath. Run -AnalyzeCreator $cleanAugurUser first (needs 3+ dossiers).")
         exit 63
     }
     if (-not (Invoke-AugurPredict -User $cleanAugurUser -SignaturePath $augSigPath)) {
-        Write-Error "[augur] prediction failed for @$cleanAugurUser."
+        [Console]::Error.WriteLine("[augur] prediction failed for @$cleanAugurUser.")
         exit 1
     }
     exit 0
