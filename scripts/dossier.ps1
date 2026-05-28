@@ -4731,6 +4731,53 @@ $actualSnippet
     } catch { }
 }
 
+# Render LEADERBOARD.md: creators ranked by rolling-avg innovation (the "doing something new"
+# signal), with skill (did Augur beat the baseline) annotated. Returns $true if rendered,
+# $false if there are no events yet. Auto-opens unless -NoOpen.
+function Invoke-AugurLeaderboard {
+    if (-not (Test-Path $Script:AugurRoot)) { Write-Host "No Augur data yet ($Script:AugurRoot)." -ForegroundColor Yellow; return $false }
+    $window = 5
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($dir in (Get-ChildItem -Path $Script:AugurRoot -Directory -ErrorAction SilentlyContinue)) {
+        $ledger = Join-Path $dir.FullName 'ledger.jsonl'
+        if (-not (Test-Path $ledger)) { continue }
+        $events = @(Get-Content $ledger -Encoding utf8 | Where-Object { $_.Trim() } | ForEach-Object {
+            try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ })
+        if ($events.Count -eq 0) { continue }
+        $recent = @($events | Select-Object -Last $window)
+        $rows.Add([pscustomobject]@{
+            Creator    = $dir.Name
+            Events     = $events.Count
+            AvgSurprise= [math]::Round((($recent | Measure-Object surprise -Average).Average), 2)
+            AvgInnov   = [math]::Round((($recent | Measure-Object innovation -Average).Average), 2)
+            AvgSkill   = [math]::Round((($recent | Measure-Object skill -Average).Average), 2)
+        })
+    }
+    if ($rows.Count -eq 0) { Write-Host "No Augur events logged yet." -ForegroundColor Yellow; return $false }
+
+    $ranked = $rows | Sort-Object AvgInnov -Descending
+    $md = New-Object System.Collections.Generic.List[string]
+    $md.Add("# Augur Leaderboard")
+    $md.Add("")
+    $md.Add("_Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm'). Ranked by rolling-avg innovation over last $window events._")
+    $md.Add("_High innovation = the creator is doing something new. Positive skill = Augur beat the creator's own baseline._")
+    $md.Add("")
+    $md.Add("| Creator | Events | Avg surprise | Avg innovation | Avg skill |")
+    $md.Add("|---|---|---|---|---|")
+    foreach ($r in $ranked) { $md.Add("| @$($r.Creator) | $($r.Events) | $($r.AvgSurprise) | $($r.AvgInnov) | $($r.AvgSkill) |") }
+
+    $boardPath = Join-Path $Script:AugurRoot 'LEADERBOARD.md'
+    Write-AtomicFile -Path $boardPath -Content ($md -join "`n")
+    Write-Host "Augur leaderboard written:" -ForegroundColor Green
+    Write-Host "  $boardPath" -ForegroundColor Green
+    if (-not $NoOpen -and (Test-Path $boardPath)) {
+        $browser = Get-DefaultBrowserExe
+        if ($browser) { try { Start-Process -FilePath $browser -ArgumentList "`"$boardPath`"" } catch {} }
+        else { try { Start-Process $boardPath } catch {} }
+    }
+    return $true
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
