@@ -5484,6 +5484,62 @@ function Invoke-PilgrimCandidatesRender {
     return $true
 }
 
+# =============================================================================
+# DAEMON — inward twin to Pilgrim. Throughline Q&A grounded in the existing corpus.
+# V1 is throughline-only (lint deferred V1.1; drift deferred V1.5). The synth output is
+# structured JSON; PowerShell verifies every cited span actually appears in the cited
+# dossier file before publication. Codex red-teams survivors. The corpus is single-
+# writer-protected by an advisory lock at $Script:VideoMemRoot\.dossier.lock. Daemon
+# never reads its own outputs on subsequent runs (DAEMON-LOG.md is write-only from
+# Daemon's perspective — the throughline reader's Tier A excludes it).
+# =============================================================================
+$Script:DaemonRoot           = Join-Path $Script:VideoMemRoot 'ARCHIVE\DAEMON'
+$Script:DaemonQuestionsDir   = Join-Path $Script:DaemonRoot 'questions'
+$Script:DaemonLogPath        = Join-Path $Script:VideoMemRoot 'ARCHIVE\DAEMON-LOG.md'
+$Script:DaemonLockPath       = Join-Path $Script:VideoMemRoot '.dossier.lock'
+$Script:DaemonSynthModel     = 'claude-sonnet-4-6'              # throughline synth (Claude)
+$Script:DaemonRedTeamModel   = 'gpt-5.3-codex-spark'            # red-team judge (codex; different family)
+$Script:DaemonRedTeamEffort  = 'medium'                         # codex reasoning effort
+$Script:DaemonNativeRedTeamModel = 'claude-haiku-4-5-20251001'  # degraded red-team (flagged self_family)
+$Script:DaemonPromptVersion  = 'daemon-throughline-v1'
+$Script:DaemonMinDossiers    = 3                                # cold-start gate (mirrors Augur ≥3)
+$Script:DaemonMinCitations   = 3                                # ≥3 dossier IDs cited per claim
+$Script:DaemonMinLineageEdges= 1                                # ≥1 lineage edge cited per claim
+$Script:DaemonRedTeamRuns    = 3                                # 3-run median verdict
+$Script:DaemonSignatureCapBytes = 8192                          # per-signature read cap (defensive)
+$Script:DaemonClaudeMaxCalls = 2                                # 1 synth + 1 retry on parse failure
+
+# Acquire an exclusive advisory lock over the dossier corpus. Returns $true on success,
+# $false if another process (Pilgrim background, second terminal, scheduled task) holds it.
+# Uses atomic File.Open with CreateNew to fail cleanly if the file already exists.
+function Lock-DossierCorpus {
+    param([Parameter(Mandatory)][string]$LockPath, [string]$Holder = 'daemon')
+    try {
+        $dir = Split-Path -Parent $LockPath
+        if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        # CreateNew mode: fails if file exists. Mutually exclusive even across processes.
+        $fs = [System.IO.File]::Open($LockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try {
+            $payload = "$Holder pid=$PID started=$((Get-Date).ToString('o'))"
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+            $fs.Write($bytes, 0, $bytes.Length)
+        } finally { $fs.Dispose() }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# Release the lock. Idempotent; never throws.
+function Unlock-DossierCorpus {
+    param([Parameter(Mandatory)][string]$LockPath)
+    try {
+        if (Test-Path -LiteralPath $LockPath) {
+            Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
