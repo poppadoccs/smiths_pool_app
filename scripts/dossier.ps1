@@ -5771,6 +5771,79 @@ function Invoke-DaemonSynth {
     }
 }
 
+# Verify a single claim's cited spans actually appear in the cited dossier files.
+# Concatenates BRIEF.md + RECIPE.md + transcript.txt + PORTFOLIO-TOUR.md (each if present)
+# for the cited dossier folder, plus a synthetic "lineage_pool" containing all lineage
+# edge lines. Substring match is whitespace-normalized (CRLF -> LF, runs of whitespace
+# collapsed to single spaces) on BOTH the haystack and the needle, case-sensitive.
+# Returns $true if ALL evidence rows pass AND the claim cites >= $Script:DaemonMinCitations
+# DIFFERENT dossier_ids AND >= $Script:DaemonMinLineageEdges lineage rows.
+function Test-DaemonClaimEvidence {
+    param(
+        [Parameter(Mandatory)]$Claim,
+        [Parameter(Mandatory)][array]$DossierRows,
+        [Parameter(Mandatory)][string[]]$LineageEdges
+    )
+    if (-not $Claim -or -not $Claim.PSObject.Properties.Name -contains 'evidence') { return $false }
+    $evidence = @($Claim.evidence)
+    if ($evidence.Count -eq 0) { return $false }
+
+    # Build a quick lookup of FolderName -> Folder path.
+    $folderMap = @{}
+    foreach ($r in $DossierRows) { $folderMap[$r.FolderName] = $r.Folder }
+
+    # Build the lineage pool as a single whitespace-normalized blob (every edge as text).
+    $lineagePool = ($LineageEdges -join "`n")
+    $normLineage = ($lineagePool -replace "`r`n","`n" -replace '\s+', ' ').Trim()
+
+    $citedFolders = New-Object System.Collections.Generic.HashSet[string]
+    $lineageHits = 0
+
+    foreach ($ev in $evidence) {
+        $dossierId = "$($ev.dossier_id)"
+        $needle = "$($ev.span_quote)"
+        if ([string]::IsNullOrWhiteSpace($needle)) { return $false }
+        $normNeedle = ($needle -replace "`r`n","`n" -replace '\s+', ' ').Trim()
+        if ($normNeedle.Length -lt 4) { return $false }   # too short to be meaningful evidence
+
+        # Try lineage first if the cited dossier_id is literally 'lineage' OR the needle matches the lineage pool.
+        $hitInLineage = ($normLineage.IndexOf($normNeedle, [System.StringComparison]::Ordinal) -ge 0)
+
+        if ($folderMap.ContainsKey($dossierId)) {
+            $folder = $folderMap[$dossierId]
+            $haystack = ''
+            foreach ($fileName in @('BRIEF.md','RECIPE.md','transcript.txt','PORTFOLIO-TOUR.md')) {
+                $path = Join-Path $folder $fileName
+                if (Test-Path -LiteralPath $path) {
+                    try {
+                        $body = Get-Content -LiteralPath $path -Raw -Encoding utf8
+                        if ($body) { $haystack += $body + "`n" }
+                    } catch { }
+                }
+            }
+            # Also fold in the dossier's lineage edges that mention this folder, so a model
+            # citing a lineage edge against the source dossier ID still passes.
+            $relatedEdges = @($LineageEdges | Where-Object { $_ -like "$dossierId *" -or $_ -like "* $dossierId" })
+            if ($relatedEdges.Count -gt 0) { $haystack += ($relatedEdges -join "`n") + "`n" }
+
+            $normHay = ($haystack -replace "`r`n","`n" -replace '\s+', ' ').Trim()
+            $hitInDossier = ($normHay.IndexOf($normNeedle, [System.StringComparison]::Ordinal) -ge 0)
+            if (-not $hitInDossier -and -not $hitInLineage) { return $false }
+            [void]$citedFolders.Add($dossierId)
+            if ($hitInLineage) { $lineageHits++ }
+        } else {
+            # dossier_id not in the corpus AT ALL — only acceptable if the needle matches the lineage pool
+            # and we count it as a lineage-only citation (still must satisfy lineage minimum).
+            if (-not $hitInLineage) { return $false }
+            $lineageHits++
+        }
+    }
+
+    if ($citedFolders.Count -lt $Script:DaemonMinCitations) { return $false }
+    if ($lineageHits -lt $Script:DaemonMinLineageEdges) { return $false }
+    return $true
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
