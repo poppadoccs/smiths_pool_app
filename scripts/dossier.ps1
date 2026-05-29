@@ -5540,6 +5540,115 @@ function Unlock-DossierCorpus {
     } catch { }
 }
 
+# Assemble the Tier-A grounded context for a throughline question. Reads:
+#   - every ARCHIVE\SIGNATURES\<user>.md (capped at $Script:DaemonSignatureCapBytes each)
+#   - all dossier rows from Get-ArchiveDossierData (metadata only, no body bytes)
+#   - lineage edges derived from each row's .BuildsOn
+#   - ARCHIVE\FROM-CLAUDE.md (full body, fenced as <<<JOURNAL (opinion only, NOT ground truth)>>>)
+# Daemon's prior outputs (DAEMON-LOG.md, questions/*) are explicitly EXCLUDED.
+# Returns @{ inventory_text; dossier_rows; dossier_count; signatures_count; lineage_count; journal_chars }.
+function Get-DaemonTierAContext {
+    $rows = @(Get-ArchiveDossierData)
+    $dossierCount = $rows.Count
+
+    # Signatures.
+    $sigDir = Join-Path $Script:VideoMemRoot 'ARCHIVE\SIGNATURES'
+    $sigBlocks = New-Object System.Collections.Generic.List[string]
+    $sigCount = 0
+    if (Test-Path -LiteralPath $sigDir) {
+        $sigFiles = @(Get-ChildItem -LiteralPath $sigDir -Filter '*.md' -ErrorAction SilentlyContinue |
+                     Where-Object { $_.Name -notlike '*.echo.md' -and $_.Name -notlike '*.echo.log' })
+        foreach ($sf in $sigFiles) {
+            $sigCount++
+            try {
+                $raw = Get-Content -LiteralPath $sf.FullName -Raw -Encoding utf8
+            } catch { continue }
+            if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+            $cap = $Script:DaemonSignatureCapBytes
+            if ($raw.Length -gt $cap) { $raw = $raw.Substring(0, $cap) + "`n[... truncated at $cap chars ...]" }
+            $userName = [System.IO.Path]::GetFileNameWithoutExtension($sf.Name)
+            $sigBlocks.Add("### SIGNATURE: @$userName")
+            $sigBlocks.Add($raw)
+            $sigBlocks.Add('')
+        }
+    }
+
+    # Dossier metadata + lineage edges.
+    $dossierBlocks = New-Object System.Collections.Generic.List[string]
+    $lineageEdges = New-Object System.Collections.Generic.List[string]
+    foreach ($r in $rows) {
+        $tagsStr = if ($r.Tags -and @($r.Tags).Count -gt 0) { ($r.Tags -join ', ') } else { '(none)' }
+        $cap = if ($r.Caption) { [string]$r.Caption } else { '' }
+        if ($cap.Length -gt 400) { $cap = $cap.Substring(0, 400) + '...' }
+        $dossierBlocks.Add("### DOSSIER: $($r.FolderName)")
+        $dossierBlocks.Add("- creator: @$($r.Username)")
+        $dossierBlocks.Add("- shortcode: $($r.ShortCode)")
+        $dossierBlocks.Add("- posted_at: $($r.PostedAt)")
+        $dossierBlocks.Add("- tags: $tagsStr")
+        $dossierBlocks.Add("- has_transcript: $($r.HasTranscript)")
+        $dossierBlocks.Add("- has_recipe: $($r.HasRecipe)")
+        if ($cap) { $dossierBlocks.Add("- caption_excerpt: $cap") }
+        $dossierBlocks.Add('')
+        if ($r.BuildsOn -and @($r.BuildsOn).Count -gt 0) {
+            foreach ($parent in $r.BuildsOn) {
+                if ([string]::IsNullOrWhiteSpace($parent)) { continue }
+                $lineageEdges.Add("$($r.FolderName) -> builds_on -> $parent")
+            }
+        }
+    }
+
+    # FROM-CLAUDE.md (opinion-tagged).
+    $fromClaudePath = Join-Path $Script:VideoMemRoot 'ARCHIVE\FROM-CLAUDE.md'
+    $journalBlock = ''
+    $journalChars = 0
+    if (Test-Path -LiteralPath $fromClaudePath) {
+        try {
+            $journalRaw = Get-Content -LiteralPath $fromClaudePath -Raw -Encoding utf8
+        } catch { $journalRaw = '' }
+        if (-not [string]::IsNullOrWhiteSpace($journalRaw)) {
+            $journalChars = $journalRaw.Length
+            $journalBlock = "<<<JOURNAL (opinion only, NOT ground truth)>>>`n$journalRaw`n<<<END JOURNAL>>>"
+        }
+    }
+
+    # Inventory text assembly.
+    $inventory = New-Object System.Collections.Generic.List[string]
+    $inventory.Add("# Tier-A Corpus Inventory")
+    $inventory.Add("")
+    $inventory.Add("- dossier_count: $dossierCount")
+    $inventory.Add("- signatures_count: $sigCount")
+    $inventory.Add("- lineage_edges_count: $($lineageEdges.Count)")
+    $inventory.Add("- journal_chars: $journalChars")
+    $inventory.Add("")
+    $inventory.Add("## SIGNATURES (trusted; per-creator synthesized voice/pattern files)")
+    $inventory.Add("")
+    if ($sigBlocks.Count -gt 0) { $inventory.AddRange([string[]]$sigBlocks) } else { $inventory.Add('(no signatures present)'); $inventory.Add('') }
+    $inventory.Add("## DOSSIERS (trusted; per-post metadata from Get-ArchiveDossierData)")
+    $inventory.Add("")
+    if ($dossierBlocks.Count -gt 0) { $inventory.AddRange([string[]]$dossierBlocks) } else { $inventory.Add('(no dossiers present)'); $inventory.Add('') }
+    $inventory.Add("## LINEAGE EDGES (trusted; derived from per-dossier builds_on)")
+    $inventory.Add("")
+    if ($lineageEdges.Count -gt 0) {
+        $inventory.AddRange([string[]]$lineageEdges)
+        $inventory.Add('')
+    } else {
+        $inventory.Add('(no lineage edges recorded)')
+        $inventory.Add('')
+    }
+    $inventory.Add("## JOURNAL (opinion only; never citation evidence)")
+    $inventory.Add("")
+    if ($journalBlock) { $inventory.Add($journalBlock) } else { $inventory.Add('(no FROM-CLAUDE.md present)') }
+
+    return @{
+        inventory_text   = ($inventory -join "`n")
+        dossier_rows     = $rows
+        dossier_count    = $dossierCount
+        signatures_count = $sigCount
+        lineage_count    = $lineageEdges.Count
+        journal_chars    = $journalChars
+    }
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
