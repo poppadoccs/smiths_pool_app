@@ -5649,6 +5649,128 @@ function Get-DaemonTierAContext {
     }
 }
 
+# Build the throughline synthesis prompt. Inventory text is TRUSTED (we assembled it from
+# our own corpus), but the JOURNAL section inside it is already self-fenced as opinion.
+# Question + dossier metadata are also trusted (no external scrape). The output schema is
+# strict structured JSON so PowerShell can mechanically verify spans before publication.
+function Get-DaemonThroughlinePrompt {
+    param(
+        [Parameter(Mandatory)][string]$Question,
+        [Parameter(Mandatory)][string]$InventoryText
+    )
+    return @"
+You are Daemon, the inward twin to Pilgrim. Pilgrim wanders outward and gathers; you reflect
+on what the archive already holds. You will answer ONE question about the corpus below.
+
+Rules of grounding (these are enforced by code AFTER you respond; if you violate them, your
+claim is rejected before publication):
+- Every claim you make MUST cite >= $Script:DaemonMinCitations DIFFERENT dossiers by dossier_id
+  (the folder name like 2026-04-18_<user>_<id>).
+- Every claim MUST also cite >= $Script:DaemonMinLineageEdges lineage edge (one of the lines
+  in the LINEAGE EDGES section).
+- For each citation, include the VERBATIM span_quote you found in the dossier or the lineage
+  block. Substring will be checked against the actual file. If it does not match, the citation
+  is rejected.
+- The JOURNAL section is OPINION (FROM-CLAUDE.md). You may quote it for flavor, but it is
+  NEVER citation evidence; dossier metadata wins on conflict.
+- If you cannot find >= $Script:DaemonMinCitations citations for ANY claim, return
+  abstain_reason with a short explanation and an empty claims array.
+
+Emit ONLY a JSON object (no markdown fence, no commentary) in exactly this shape:
+
+{
+  "claims": [
+    {
+      "text": "<one specific claim about the corpus, ~1-2 sentences>",
+      "evidence": [
+        {
+          "dossier_id": "<folder name>",
+          "span_quote": "<verbatim substring from the dossier metadata/files OR a lineage edge line>",
+          "span_offset": 0
+        }
+      ]
+    }
+  ],
+  "abstain_reason": null
+}
+
+The span_offset is informational only (it does not gate publication). The span_quote is what
+will be substring-checked. Quote 8-40 words verbatim; longer quotes have more rejection risk
+because any whitespace or punctuation drift kills the substring match.
+
+The question:
+$Question
+
+The corpus inventory (TRUSTED; the JOURNAL block inside is self-fenced as opinion-only):
+
+$InventoryText
+"@
+}
+
+# Run the synth: one claude call (or native fallback), parse JSON, retry once on parse fail.
+# Returns @{ ok; claims; abstain_reason; raw_text; claude_calls } where claims is an array of
+# PSCustomObject {text, evidence=[{dossier_id, span_quote, span_offset}]}.
+function Invoke-DaemonSynth {
+    param(
+        [Parameter(Mandatory)][string]$Question,
+        [Parameter(Mandatory)][string]$InventoryText
+    )
+    $prompt = Get-DaemonThroughlinePrompt -Question $Question -InventoryText $InventoryText
+
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    $haveNative = [bool]$env:ANTHROPIC_API_KEY -and [bool](Get-Command python -ErrorAction SilentlyContinue)
+    if (-not $claudeCmd -and -not $haveNative) {
+        Write-Warning "[daemon] need claude CLI or ANTHROPIC_API_KEY+python to synthesize."
+        return @{ ok = $false; claims = @(); abstain_reason = 'no model available'; raw_text = ''; claude_calls = 0 }
+    }
+
+    # NOTE: do NOT pass --add-dir; the model must only see the fenced prompt payload.
+    $callOnce = {
+        param($p)
+        if ($claudeCmd) {
+            try {
+                return ($p | & claude --dangerously-skip-permissions --model $Script:DaemonSynthModel -p 2>&1) -join "`n"
+            } catch {
+                Write-Warning "[daemon] claude synth threw: $($_.Exception.Message)"
+                return $null
+            }
+        } else {
+            return Invoke-NativeAugurText -Prompt $p -Model $Script:DaemonSynthModel
+        }
+    }
+
+    $calls = 0
+    $raw = & $callOnce $prompt
+    $calls++
+    $parsed = ConvertFrom-AugurJson -Text $raw
+
+    if (-not $parsed -and $calls -lt $Script:DaemonClaudeMaxCalls) {
+        Write-Host "  [daemon] synth JSON unparseable; retrying once..." -ForegroundColor DarkYellow
+        $retryPrompt = $prompt + "`n`nIMPORTANT: your previous attempt did not return valid JSON. Emit ONLY the JSON object. No prose, no fences, no commentary."
+        $raw = & $callOnce $retryPrompt
+        $calls++
+        $parsed = ConvertFrom-AugurJson -Text $raw
+    }
+
+    if (-not $parsed) {
+        return @{ ok = $false; claims = @(); abstain_reason = 'unparseable JSON after retry'; raw_text = "$raw"; claude_calls = $calls }
+    }
+
+    $abstain = if ($parsed.PSObject.Properties.Name -contains 'abstain_reason') { "$($parsed.abstain_reason)" } else { '' }
+    $claimsArr = @()
+    if ($parsed.PSObject.Properties.Name -contains 'claims' -and $parsed.claims) {
+        $claimsArr = @($parsed.claims)
+    }
+
+    return @{
+        ok             = ($claimsArr.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($abstain))
+        claims         = $claimsArr
+        abstain_reason = $abstain
+        raw_text       = "$raw"
+        claude_calls   = $calls
+    }
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
