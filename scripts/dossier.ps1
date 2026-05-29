@@ -206,6 +206,12 @@ param(
     # <user>/candidates.jsonl for human review.
     [switch]$DiscoverAdjacent,
 
+    # Daemon: throughline Q&A grounded in the existing dossier corpus.
+    # "-Daemon `"<question>`"" synthesizes a span-grounded answer over signatures +
+    # lineage + dossier metadata + FROM-CLAUDE.md (tagged as opinion). Codex red-teams
+    # surviving claims. Requires a value (PowerShell cannot bind a bare [string] param).
+    [string]$Daemon,
+
     [switch]$Help
 )
 
@@ -241,6 +247,9 @@ $ErrorActionPreference = 'Stop'
 #  66  -Pilgrim <user>: budget exceeded without producing a usable dossier
 #       (a research-dossier.md.partial may have been written for human review)
 #  67  -Pilgrim <user>: all scrape sources failed (no API key or all network failures)
+#  68  -Daemon "<question>": corpus too sparse (<3 dossiers) for grounded synthesis
+#  69  -Daemon "<question>": corpus lock held by another dossier-system process
+#  70  -Daemon "<question>": no claims survived span-evidence + red-team verification
 # =============================================================================
 
 # =============================================================================
@@ -304,6 +313,12 @@ FLAGS:
   -DiscoverAdjacent      Modifier for -Pilgrim: enable the adjacency-gate step (default
                          off). Top-3 candidates above 0.5 relevance append to
                          <user>/candidates.jsonl for human review.
+  -Daemon "<question>"   Mode: throughline Q&A grounded in the dossier corpus. Synthesizes
+                         a span-cited answer over signatures + lineage + dossier metadata
+                         + FROM-CLAUDE.md (opinion only). Each claim is span-verified and
+                         red-teamed by codex (gpt) before publication. Output: one file
+                         under ARCHIVE\DAEMON\questions\ + one line appended to
+                         ARCHIVE\DAEMON-LOG.md.
   -Help             Print this help
 
 OPTIONAL ENVIRONMENT VARIABLES:
