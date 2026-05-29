@@ -5829,7 +5829,7 @@ function Test-DaemonClaimEvidence {
             $normHay = ($haystack -replace "`r`n","`n" -replace '\s+', ' ').Trim()
             $hitInDossier = ($normHay.IndexOf($normNeedle, [System.StringComparison]::Ordinal) -ge 0)
             if (-not $hitInDossier -and -not $hitInLineage) { return $false }
-            [void]$citedFolders.Add($dossierId)
+            if ($hitInDossier) { [void]$citedFolders.Add($dossierId) }
             if ($hitInLineage) { $lineageHits++ }
         } else {
             # dossier_id not in the corpus AT ALL — only acceptable if the needle matches the lineage pool
@@ -6158,7 +6158,12 @@ function Invoke-DaemonRun {
         Write-Host "  log: $Script:DaemonLogPath" -ForegroundColor DarkGray
 
         if ($published.Count -eq 0) {
-            return 70
+            if ($synth.claims.Count -gt 0) {
+                [Console]::Error.WriteLine("[daemon] No claims survived span-evidence + red-team verification ($($synth.claims.Count) synthesized, 0 published).")
+                return 70
+            }
+            [Console]::Error.WriteLine("[daemon] No publishable claims: synth produced none ($($synth.abstain_reason)).")
+            return 1
         }
         return 0
     } finally {
