@@ -7034,6 +7034,12 @@ if ($PilgrimCandidates) {
     if (Invoke-PilgrimCandidatesRender) { exit 0 } else { exit 64 }
 }
 
+# Mode 0k: -Daemon "<question>" — throughline Q&A grounded in the existing corpus.
+if ($Daemon) {
+    $rc = Invoke-DaemonRun -Question $Daemon
+    exit $rc
+}
+
 # Mode 1: -InstallWatchTask
 if ($InstallWatchTask) {
     Install-WatchTask -WatchInput $Watch -TimeStr $Time
