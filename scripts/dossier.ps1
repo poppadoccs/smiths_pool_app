@@ -5940,6 +5940,232 @@ $evBlock
     return @{ verdict=$verdict; reasons=@($reasons); runs=$runs; judge_model=$judgeModel; self_family=$selfFamily; skipped=$false }
 }
 
+# Write the per-question markdown atomically and append one line to DAEMON-LOG.md.
+# Returns the per-question file path.
+function Invoke-DaemonWriteAnswer {
+    param(
+        [Parameter(Mandatory)][string]$Question,
+        [Parameter(Mandatory)][string]$Slug,
+        [Parameter(Mandatory)][string]$Timestamp,
+        [Parameter(Mandatory)]$TierA,
+        [Parameter(Mandatory)][string]$SynthRaw,
+        [Parameter(Mandatory)][array]$Published,    # claims that passed evidence + red-team
+        [Parameter(Mandatory)][array]$Rejected,     # claims rejected with reason
+        [Parameter(Mandatory)][hashtable]$Diagnostics  # @{ claude_calls; red_team_runs_total; red_team_skipped; abstain_reason }
+    )
+    if (-not (Test-Path -LiteralPath $Script:DaemonQuestionsDir)) {
+        New-Item -ItemType Directory -Force -Path $Script:DaemonQuestionsDir | Out-Null
+    }
+
+    $body = New-Object System.Collections.Generic.List[string]
+    $body.Add("# Daemon Throughline: $Question")
+    $body.Add("")
+    $body.Add("_Generated $Timestamp. Mode: throughline (V1). Prompt version: $Script:DaemonPromptVersion._")
+    $body.Add("")
+    $body.Add("## Question")
+    $body.Add("")
+    $body.Add($Question)
+    $body.Add("")
+    $body.Add("## Tier-A context inventory")
+    $body.Add("")
+    $body.Add("- dossier_count: $($TierA.dossier_count)")
+    $body.Add("- signatures_count: $($TierA.signatures_count)")
+    $body.Add("- lineage_edges_count: $($TierA.lineage_count)")
+    $body.Add("- journal_chars: $($TierA.journal_chars)")
+    $body.Add("")
+    $body.Add("## Diagnostics")
+    $body.Add("")
+    $body.Add("- claude_calls: $($Diagnostics.claude_calls)")
+    $body.Add("- red_team_runs_total: $($Diagnostics.red_team_runs_total)")
+    $body.Add("- red_team_skipped: $($Diagnostics.red_team_skipped)")
+    if ($Diagnostics.abstain_reason) {
+        $body.Add("- abstain_reason: $($Diagnostics.abstain_reason)")
+    }
+    $body.Add("")
+    $body.Add("## Published claims ($($Published.Count))")
+    $body.Add("")
+    if ($Published.Count -eq 0) {
+        $body.Add('_No claims survived span-evidence + red-team verification._')
+        $body.Add('')
+    } else {
+        $idx = 1
+        foreach ($c in $Published) {
+            $body.Add("### Claim $idx")
+            $body.Add("")
+            $body.Add("**$($c.text)**")
+            $body.Add("")
+            $body.Add("Evidence:")
+            foreach ($ev in $c.evidence) {
+                $q = "$($ev.span_quote)" -replace '\r?\n', ' '
+                $body.Add("- ``$($ev.dossier_id)``: " + '"' + $q + '"')
+            }
+            $body.Add("")
+            $idx++
+        }
+    }
+    $body.Add("## Rejected claims ($($Rejected.Count))")
+    $body.Add("")
+    if ($Rejected.Count -eq 0) {
+        $body.Add('_None._')
+        $body.Add('')
+    } else {
+        foreach ($r in $Rejected) {
+            $body.Add("- **$($r.text)** — reason: $($r.reason)")
+        }
+        $body.Add('')
+    }
+    $body.Add("## Raw synth output (audit)")
+    $body.Add("")
+    $body.Add('```')
+    $body.Add($SynthRaw)
+    $body.Add('```')
+
+    $perQuestionPath = Join-Path $Script:DaemonQuestionsDir "$Timestamp-$Slug.md"
+    Write-AtomicFile -Path $perQuestionPath -Content ($body -join "`n")
+
+    # Append one entry to DAEMON-LOG.md (chronological, write-only from Daemon's perspective).
+    $logDir = Split-Path -Parent $Script:DaemonLogPath
+    if ($logDir -and -not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
+    if (-not (Test-Path -LiteralPath $Script:DaemonLogPath)) {
+        $header = "# Daemon Log`n`n_Chronological. Append-only. Not read by subsequent Daemon runs._`n`n---`n"
+        Set-Content -LiteralPath $Script:DaemonLogPath -Value $header -Encoding utf8
+    }
+    $logEntry = @"
+
+## $Timestamp
+- mode: throughline
+- question_slug: $Slug
+- claims_published: $($Published.Count)
+- claims_rejected: $($Rejected.Count)
+- file: $(Split-Path -Leaf $perQuestionPath)
+"@
+    Add-Content -LiteralPath $Script:DaemonLogPath -Value $logEntry -Encoding utf8
+
+    return $perQuestionPath
+}
+
+# Top-level Daemon orchestrator: acquire lock -> cold-start gate -> Tier A -> synth ->
+# per-claim evidence verify -> per-surviving-claim red-team -> write -> release lock.
+# Returns an exit code suggestion (caller's dispatch uses it):
+#   0  success (>=1 claim published)
+#  68  cold-start: corpus has <$Script:DaemonMinDossiers dossiers
+#  69  corpus lock held by another process
+#  70  no claims survived evidence + red-team
+#   1  catch-all (synth produced an abstain or empty output unrelated to the gates)
+function Invoke-DaemonRun {
+    param([Parameter(Mandatory)][string]$Question)
+    if ([string]::IsNullOrWhiteSpace($Question)) {
+        [Console]::Error.WriteLine("[daemon] -Daemon requires a non-empty `"<question>`" value.")
+        return 1
+    }
+
+    # Slug + timestamp.
+    $rawSlug = ($Question -replace '[^a-zA-Z0-9]','-').ToLower() -replace '-+','-'
+    $rawSlug = $rawSlug -replace '^-|-$',''
+    if ([string]::IsNullOrWhiteSpace($rawSlug)) { $rawSlug = 'question' }
+    if ($rawSlug.Length -gt 40) { $rawSlug = $rawSlug.Substring(0, 40) }
+    $ts = Get-Date -Format 'yyyy-MM-ddTHHmmss'
+
+    Write-Host ''
+    Write-Host "=== Daemon throughline: $Question ===" -ForegroundColor Cyan
+    Write-Host "  ts=$ts slug=$rawSlug" -ForegroundColor DarkGray
+
+    # Lock the corpus.
+    if (-not (Lock-DossierCorpus -LockPath $Script:DaemonLockPath -Holder 'daemon')) {
+        [Console]::Error.WriteLine("[daemon] Corpus lock held by another dossier-system process: $Script:DaemonLockPath. Try again later.")
+        return 69
+    }
+
+    try {
+        # Cold-start gate (before we pay for any model call).
+        $rows = @(Get-ArchiveDossierData)
+        if ($rows.Count -lt $Script:DaemonMinDossiers) {
+            [Console]::Error.WriteLine("[daemon] Corpus too sparse: $($rows.Count) dossiers (need >= $Script:DaemonMinDossiers). Run -Watch or scrape a few posts first.")
+            return 68
+        }
+
+        # Tier A.
+        Write-Host '[1/4] Assembling Tier-A context...' -ForegroundColor Cyan
+        $tierA = Get-DaemonTierAContext
+        Write-Host ("  dossiers={0} signatures={1} lineage_edges={2} journal_chars={3}" -f `
+                    $tierA.dossier_count, $tierA.signatures_count, $tierA.lineage_count, $tierA.journal_chars) -ForegroundColor DarkGray
+
+        # Synth.
+        Write-Host '[2/4] Synthesizing claims (claude; no --add-dir)...' -ForegroundColor Cyan
+        $synth = Invoke-DaemonSynth -Question $Question -InventoryText $tierA.inventory_text
+        Write-Host ("  synth ok={0} claims={1} claude_calls={2} abstain={3}" -f `
+                    $synth.ok, $synth.claims.Count, $synth.claude_calls, ([string]::IsNullOrWhiteSpace($synth.abstain_reason) -eq $false)) -ForegroundColor DarkGray
+
+        # Lineage edges (already computed inside TierA assembly — re-derive a clean string array
+        # here so Test-DaemonClaimEvidence does not have to redo the work).
+        $lineageEdges = New-Object System.Collections.Generic.List[string]
+        foreach ($r in $tierA.dossier_rows) {
+            if ($r.BuildsOn -and @($r.BuildsOn).Count -gt 0) {
+                foreach ($parent in $r.BuildsOn) {
+                    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+                        $lineageEdges.Add("$($r.FolderName) -> builds_on -> $parent")
+                    }
+                }
+            }
+        }
+
+        # Per-claim evidence verification.
+        $afterEvidence = New-Object System.Collections.Generic.List[object]
+        $rejected = New-Object System.Collections.Generic.List[object]
+        foreach ($claim in $synth.claims) {
+            $passes = Test-DaemonClaimEvidence -Claim $claim -DossierRows $tierA.dossier_rows -LineageEdges ([string[]]$lineageEdges.ToArray())
+            if ($passes) {
+                $afterEvidence.Add($claim)
+            } else {
+                $rejected.Add(@{ text = "$($claim.text)"; reason = 'span-evidence verification failed' })
+            }
+        }
+        Write-Host ("[3/4] Span verification: kept={0} rejected={1}" -f $afterEvidence.Count, $rejected.Count) -ForegroundColor Cyan
+
+        # Per-claim red-team.
+        $published = New-Object System.Collections.Generic.List[object]
+        $redTeamSkipped = $false
+        $redTeamRunsTotal = 0
+        foreach ($claim in $afterEvidence) {
+            $rt = Invoke-DaemonRedTeam -Question $Question -Claim $claim
+            if ($rt.skipped) { $redTeamSkipped = $true }
+            $redTeamRunsTotal += [int]$rt.runs
+            if ($rt.verdict -eq 'KEEP') {
+                $published.Add($claim)
+            } else {
+                $reasonText = if ($rt.reasons -and @($rt.reasons).Count -gt 0) { ($rt.reasons -join '; ') } else { 'red-team rejected' }
+                $rejected.Add(@{ text = "$($claim.text)"; reason = "red-team REJECT: $reasonText" })
+            }
+        }
+        Write-Host ("  red-team: published={0} rejected={1} runs_total={2} skipped={3}" -f `
+                    $published.Count, ($rejected.Count), $redTeamRunsTotal, $redTeamSkipped) -ForegroundColor DarkGray
+
+        # Write the per-question file + log line regardless of outcome (audit trail).
+        $diagnostics = @{
+            claude_calls        = [int]$synth.claude_calls
+            red_team_runs_total = [int]$redTeamRunsTotal
+            red_team_skipped    = [bool]$redTeamSkipped
+            abstain_reason      = "$($synth.abstain_reason)"
+        }
+        Write-Host '[4/4] Writing per-question file + appending DAEMON-LOG.md ...' -ForegroundColor Cyan
+        $outPath = Invoke-DaemonWriteAnswer -Question $Question -Slug $rawSlug -Timestamp $ts -TierA $tierA `
+                   -SynthRaw $synth.raw_text -Published ([array]$published.ToArray()) `
+                   -Rejected ([array]$rejected.ToArray()) -Diagnostics $diagnostics
+
+        Write-Host ''
+        Write-Host 'Daemon cycle complete:' -ForegroundColor Green
+        Write-Host "  $outPath" -ForegroundColor Green
+        Write-Host "  log: $Script:DaemonLogPath" -ForegroundColor DarkGray
+
+        if ($published.Count -eq 0) {
+            return 70
+        }
+        return 0
+    } finally {
+        Unlock-DossierCorpus -LockPath $Script:DaemonLockPath
+    }
+}
+
 function Install-WatchTask {
     param(
         [string]$WatchInput,
