@@ -38,7 +38,34 @@ export type FormField = {
   options?: string[]; // select, radio
   section?: string; // group heading
   order: number;
+  // radio/select only: option values that reveal a companion free-text
+  // input when selected (e.g. ["Other"], ["Variable", "Other"]). The text
+  // is stored under otherTextKey(field.id) — a plain sibling key that
+  // rides RHF autosave untouched (it is NOT `__`-prefixed).
+  allowTextFor?: string[];
 };
+
+// Companion free-text key for a radio/select field with allowTextFor.
+// Plain (non-`__`) key by design: autosave must persist it.
+export function otherTextKey(fieldId: string): string {
+  return `${fieldId}_other_text`;
+}
+
+// The selected value's companion text, or null when the field has no
+// allowTextFor, the selection doesn't trigger text, or the text is blank.
+// Shared by the PDF and email renderers so both surfaces stay identical.
+export function resolveOtherText(
+  field: FormField,
+  formData: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!field.allowTextFor?.length || !formData) return null;
+  const value = formData[field.id];
+  if (typeof value !== "string" || !field.allowTextFor.includes(value)) {
+    return null;
+  }
+  const text = formData[otherTextKey(field.id)];
+  return typeof text === "string" && text.trim() ? text.trim() : null;
+}
 
 export type FormTemplate = {
   id: string;
@@ -130,6 +157,11 @@ export function buildFormSchema(template: FormTemplate) {
         } else {
           shape[field.id] = z.string();
         }
+        // Companion free-text for allowTextFor options — always optional so
+        // a worker can pick "Other" and move on without typing details.
+        if (field.allowTextFor?.length) {
+          shape[otherTextKey(field.id)] = z.string();
+        }
         break;
 
       case "photo":
@@ -150,6 +182,9 @@ export function getDefaultValues(template: FormTemplate): FormData {
   const defaults: FormData = {};
   for (const field of template.fields) {
     defaults[field.id] = field.type === "checkbox" ? false : "";
+    if (field.allowTextFor?.length) {
+      defaults[otherTextKey(field.id)] = "";
+    }
   }
   return defaults;
 }

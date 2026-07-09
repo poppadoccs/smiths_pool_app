@@ -1,5 +1,10 @@
-import type { FormTemplate, FormData } from "@/lib/forms";
+import {
+  resolveOtherText,
+  type FormTemplate,
+  type FormData,
+} from "@/lib/forms";
 import type { PhotoMetadata } from "@/lib/photos";
+import { parseSummaryItems, SUMMARY_FIELD_ID } from "@/lib/summary";
 
 type SubmissionEmailProps = {
   jobTitle: string;
@@ -24,12 +29,41 @@ export function buildSubmissionEmail({
   photos,
   editUrl,
 }: SubmissionEmailProps): string {
+  const summaryItems = parseSummaryItems(formData);
+
   const formRows = template.fields
     .map((field) => {
       const value = formData[field.id];
       let displayValue: string;
 
-      if (field.type === "checkbox") {
+      if (field.id === SUMMARY_FIELD_ID && summaryItems !== null) {
+        // Structured summary — bulleted items, each with its attached
+        // photo thumbnails. Mirrors the PDF's summary block.
+        displayValue =
+          summaryItems.length === 0
+            ? '<span style="color: #999;">—</span>'
+            : `<ul style="margin: 0; padding-left: 18px;">${summaryItems
+                .map((item) => {
+                  const text = item.text.trim()
+                    ? escapeHtml(item.text.trim())
+                    : '<span style="color: #999;">(no notes)</span>';
+                  const thumbs = item.photos
+                    .map(
+                      (url) => `
+                        <a href="${escapeHtml(url)}" target="_blank" style="text-decoration: none;">
+                          <img src="${escapeHtml(url)}" alt="Summary photo" width="150" border="0"
+                               style="display: inline-block; width: 150px; max-width: 100%; height: auto; border-radius: 4px; border: 1px solid #e5e5e5; margin: 4px 4px 0 0;" />
+                        </a>`,
+                    )
+                    .join("");
+                  return `<li style="margin-bottom: 8px;">${text}${
+                    thumbs
+                      ? `<div style="margin-top: 2px;">${thumbs}</div>`
+                      : ""
+                  }</li>`;
+                })
+                .join("")}</ul>`;
+      } else if (field.type === "checkbox") {
         displayValue = value ? "Yes" : "No";
       } else if (field.type === "photo") {
         // formData stores the filename (e.g. "IMG_1234.jpg"), not a blob URL.
@@ -39,7 +73,12 @@ export function buildSubmissionEmail({
             ? "Photo attached"
             : '<span style="color: #999;">—</span>';
       } else if (typeof value === "string" && value.trim() !== "") {
-        displayValue = escapeHtml(value);
+        // Companion free-text (e.g. "Other — Aqua-Flo") — same rule as
+        // the PDF renderer.
+        const otherText = resolveOtherText(field, formData);
+        displayValue = escapeHtml(
+          otherText ? `${value} — ${otherText}` : value,
+        );
       } else {
         displayValue = '<span style="color: #999;">—</span>';
       }

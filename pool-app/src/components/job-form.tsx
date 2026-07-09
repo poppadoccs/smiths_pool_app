@@ -28,10 +28,13 @@ import { Camera, Check, Loader2 } from "lucide-react";
 import {
   buildFormSchema,
   getDefaultValues,
+  otherTextKey,
   type FormTemplate,
   type FormField,
   type FormData as JobFormData, // aliased to avoid collision with DOM FormData
 } from "@/lib/forms";
+import { SummaryItemsEditor } from "@/components/summary-items-editor";
+import { SUMMARY_FIELD_ID } from "@/lib/summary";
 import { saveFormData } from "@/lib/actions/forms";
 import { StickyFormNav } from "@/components/sticky-form-nav";
 import { ImportFromPaper } from "@/components/import-from-paper";
@@ -100,8 +103,12 @@ export function JobForm({
 }) {
   const schema = useMemo(() => buildFormSchema(template), [template]);
   const defaults = useMemo(() => {
-    if (initialData) return initialData;
-    return getDefaultValues(template);
+    // Layer server data over template defaults so fields added to the
+    // template AFTER this draft was created (and their companion
+    // `_other_text` keys) still start controlled with "" instead of
+    // undefined.
+    const base = getDefaultValues(template);
+    return initialData ? { ...base, ...initialData } : base;
   }, [template, initialData]);
 
   const {
@@ -129,7 +136,9 @@ export function JobForm({
     if (disabled) return;
     const draft = loadDraft(jobId);
     if (draft) {
-      reset(draft);
+      // Same layering as `defaults`: a draft saved before a template change
+      // may lack newer field keys — never let those go uncontrolled.
+      reset({ ...getDefaultValues(template), ...draft });
       toast.info("Draft restored");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -223,6 +232,11 @@ export function JobForm({
               jobId={jobId}
               jobPhotos={jobPhotos}
               serverFormData={initialData}
+              setCompanionValue={(key, value) =>
+                setValue(key as keyof JobFormData, value, {
+                  shouldDirty: true,
+                })
+              }
             />
           </div>
         );
@@ -348,6 +362,7 @@ function FieldRenderer({
   jobId,
   jobPhotos,
   serverFormData,
+  setCompanionValue,
 }: {
   field: FormField;
   register: UseFormRegister<JobFormData>;
@@ -357,6 +372,7 @@ function FieldRenderer({
   jobId: string;
   jobPhotos: PhotoMetadata[];
   serverFormData: JobFormData | null;
+  setCompanionValue: (key: string, value: string) => void;
 }) {
   const error = errors[field.id]?.message as string | undefined;
   const fieldId = `field-${field.id}`;
@@ -416,6 +432,20 @@ function FieldRenderer({
       );
 
     case "textarea":
+      // "107. Summary" gets the structured bullet-item editor (text +
+      // photos per bullet) instead of the plain textarea. Legacy blob text
+      // stays readable inside the editor and is never auto-deleted.
+      if (field.id === SUMMARY_FIELD_ID) {
+        return (
+          <SummaryItemsEditor
+            jobId={jobId}
+            fieldLabel={field.label}
+            jobPhotos={jobPhotos}
+            formData={serverFormData}
+            disabled={disabled}
+          />
+        );
+      }
       return (
         <div className="space-y-1.5">
           <Label htmlFor={fieldId} className="text-base">
@@ -538,7 +568,18 @@ function FieldRenderer({
                       name={field.id}
                       value={opt}
                       checked={rhf.value === opt}
-                      onChange={() => rhf.onChange(opt)}
+                      onChange={() => {
+                        rhf.onChange(opt);
+                        // Switching to a non-triggering option clears the
+                        // companion text so stale details never linger in
+                        // the saved data.
+                        if (
+                          field.allowTextFor?.length &&
+                          !field.allowTextFor.includes(opt)
+                        ) {
+                          setCompanionValue(otherTextKey(field.id), "");
+                        }
+                      }}
                       disabled={disabled}
                       className="size-6 accent-zinc-900"
                     />
@@ -546,6 +587,15 @@ function FieldRenderer({
                   </label>
                 ))}
               </div>
+              {field.allowTextFor?.includes(rhf.value as string) && (
+                <Input
+                  aria-label={`${field.label} — details`}
+                  placeholder="Please specify..."
+                  className="min-h-[48px] text-base"
+                  disabled={disabled}
+                  {...register(otherTextKey(field.id))}
+                />
+              )}
               {error && <p className="text-sm text-red-600">{error}</p>}
             </div>
           )}
