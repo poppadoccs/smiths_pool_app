@@ -53,40 +53,64 @@ export function SummaryItemsEditor({
   // The latest items snapshot, readable from timers without stale closures.
   // Written only in the handlers below (never during render).
   const itemsRef = useRef<SummaryItem[] | null>(null);
+  // Save serialization: every save chains onto this promise, so writes
+  // reach the server strictly in order and an older whole-array write can
+  // never land after (and clobber) a newer one. Each queued run reads
+  // itemsRef.current at RUN time, so back-to-back saves coalesce into
+  // "send the latest snapshot"; lastSavedRef dedupes exact repeats.
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const lastSavedRef = useRef<SummaryItem[] | null>(null);
+  // Hard ceiling on unsaved typing: starts with the first debounced change
+  // and is NOT reset by further keystrokes, so continuous typing still
+  // persists at least every 5s.
+  const maxFlushTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     return () => {
       clearTimeout(saveTimer.current);
       clearTimeout(savedTimer.current);
+      clearTimeout(maxFlushTimer.current);
     };
   }, []);
 
-  async function persist(next: SummaryItem[]) {
-    setSaveStatus("saving");
-    try {
-      const res = await saveSummaryItems(jobId, next);
-      if (!res.success) {
-        toast.error(res.error ?? "Failed to save summary");
+  function enqueueSave() {
+    saveQueue.current = saveQueue.current.then(async () => {
+      const snapshot = itemsRef.current;
+      if (!snapshot || snapshot === lastSavedRef.current) return;
+      setSaveStatus("saving");
+      try {
+        const res = await saveSummaryItems(jobId, snapshot);
+        if (!res.success) {
+          toast.error(res.error ?? "Failed to save summary");
+          setSaveStatus("idle");
+          return;
+        }
+        lastSavedRef.current = snapshot;
+        setSaveStatus("saved");
+        clearTimeout(savedTimer.current);
+        savedTimer.current = setTimeout(() => setSaveStatus("idle"), 2000);
+      } catch {
+        toast.error("Failed to save summary");
         setSaveStatus("idle");
-        return;
       }
-      setSaveStatus("saved");
-      clearTimeout(savedTimer.current);
-      savedTimer.current = setTimeout(() => setSaveStatus("idle"), 2000);
-    } catch {
-      toast.error("Failed to save summary");
-      setSaveStatus("idle");
-    }
+    });
   }
 
   // Structural changes (add/remove/reorder/photos) save immediately; text
-  // changes debounce and also flush on blur.
-  function applyAndSave(next: SummaryItem[]) {
+  // changes debounce, flush on blur, and flush at least every 5s during
+  // continuous typing so a crash mid-paragraph can't lose the paragraph.
+  function clearTypingTimers() {
     clearTimeout(saveTimer.current);
     saveTimer.current = undefined;
+    clearTimeout(maxFlushTimer.current);
+    maxFlushTimer.current = undefined;
+  }
+
+  function applyAndSave(next: SummaryItem[]) {
+    clearTypingTimers();
     itemsRef.current = next;
     setItems(next);
-    void persist(next);
+    enqueueSave();
   }
 
   function applyDebounced(next: SummaryItem[]) {
@@ -94,16 +118,21 @@ export function SummaryItemsEditor({
     setItems(next);
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      saveTimer.current = undefined;
-      if (itemsRef.current) void persist(itemsRef.current);
+      clearTypingTimers();
+      enqueueSave();
     }, 1000);
+    if (maxFlushTimer.current === undefined) {
+      maxFlushTimer.current = setTimeout(() => {
+        maxFlushTimer.current = undefined;
+        enqueueSave();
+      }, 5000);
+    }
   }
 
   function flushPendingSave() {
     if (saveTimer.current === undefined) return;
-    clearTimeout(saveTimer.current);
-    saveTimer.current = undefined;
-    if (itemsRef.current) void persist(itemsRef.current);
+    clearTypingTimers();
+    enqueueSave();
   }
 
   const legacyBlob =
