@@ -59,21 +59,43 @@ export function otherTextKey(fieldId: string): string {
 
 export const PAIRED_SECONDARY_SUFFIX = "_secondary";
 
+// Pairing only engages for types the paired renderers actually draw
+// (radio column with optional other-text, or a plain text input). Any
+// other type — and any malformed chain like `X_secondary_secondary` —
+// falls back to standalone rendering instead of silently disappearing.
+const PAIRABLE_TYPES: ReadonlySet<FieldType> = new Set(["radio", "text"]);
+
+function isPairable(field: FormField): boolean {
+  return PAIRABLE_TYPES.has(field.type);
+}
+
 export function secondaryFieldFor(
   field: FormField,
   fields: FormField[],
 ): FormField | undefined {
-  return fields.find((f) => f.id === field.id + PAIRED_SECONDARY_SUFFIX);
+  // Secondaries never have secondaries of their own.
+  if (field.id.endsWith(PAIRED_SECONDARY_SUFFIX) || !isPairable(field)) {
+    return undefined;
+  }
+  const secondary = fields.find(
+    (f) => f.id === field.id + PAIRED_SECONDARY_SUFFIX,
+  );
+  return secondary && isPairable(secondary) ? secondary : undefined;
 }
 
 export function isSecondaryField(
   field: FormField,
   fields: FormField[],
 ): boolean {
-  return (
-    field.id.endsWith(PAIRED_SECONDARY_SUFFIX) &&
-    fields.some((f) => f.id + PAIRED_SECONDARY_SUFFIX === field.id)
-  );
+  if (!field.id.endsWith(PAIRED_SECONDARY_SUFFIX) || !isPairable(field)) {
+    return false;
+  }
+  const baseId = field.id.slice(0, -PAIRED_SECONDARY_SUFFIX.length);
+  // A base that is itself a `_secondary` cannot anchor a pair, so this
+  // field is NOT folded away — it renders standalone.
+  if (baseId.endsWith(PAIRED_SECONDARY_SUFFIX)) return false;
+  const base = fields.find((f) => f.id === baseId);
+  return !!base && isPairable(base);
 }
 
 // "7. Pump Mfg — Main Pump" → { title: "7. Pump Mfg", column: "Main Pump" }

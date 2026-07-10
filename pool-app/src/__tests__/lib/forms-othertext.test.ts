@@ -108,6 +108,50 @@ describe("paired field helpers", () => {
       column: "",
     });
   });
+
+  it("malformed X_secondary_secondary chain renders standalone — never folded or skipped", () => {
+    const chained = radioField({
+      id: "7_pump_mfg_secondary_secondary",
+      label: "7. Pump Mfg — ???",
+    });
+    const all = [main, secondary, chained];
+    // The chained field is NOT treated as anyone's secondary (its base is
+    // itself a secondary), so no renderer skips it...
+    expect(isSecondaryField(chained, all)).toBe(false);
+    // ...and the real secondary doesn't fold it in either.
+    expect(secondaryFieldFor(secondary, all)).toBeUndefined();
+  });
+
+  it("pairing only engages for radio/text types on BOTH sides", () => {
+    const photoBase: FormField = {
+      id: "5_pic",
+      label: "5. Pic — Main",
+      type: "photo",
+      required: false,
+      order: 0,
+    };
+    const photoSecondary: FormField = {
+      ...photoBase,
+      id: "5_pic_secondary",
+      label: "5. Pic — Secondary",
+    };
+    const all = [photoBase, photoSecondary];
+    expect(secondaryFieldFor(photoBase, all)).toBeUndefined();
+    expect(isSecondaryField(photoSecondary, all)).toBe(false);
+
+    // Mixed pair (radio base, checkbox secondary) also refuses to pair.
+    const mixedSecondary: FormField = {
+      id: "7_pump_mfg_secondary",
+      label: "7. Pump Mfg — Secondary Pump",
+      type: "checkbox",
+      required: false,
+      order: 1,
+    };
+    expect(secondaryFieldFor(main, [main, mixedSecondary])).toBeUndefined();
+    expect(isSecondaryField(mixedSecondary, [main, mixedSecondary])).toBe(
+      false,
+    );
+  });
 });
 
 describe("resolveOtherText", () => {
