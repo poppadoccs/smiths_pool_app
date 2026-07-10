@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { checkJobInvariants } from "@/lib/invariants";
 import {
+  ADDITIONAL_PHOTOS_CAP,
   ADDITIONAL_PHOTOS_FIELD_ID,
   RESERVED_PHOTO_MAP_KEY,
 } from "@/lib/multi-photo";
@@ -107,18 +108,36 @@ describe("checkJobInvariants — cap enforcement", () => {
     expect(capViolations[0].owner).toBe(Q5);
   });
 
-  it("passes a Q108 bucket exactly at cap (7)", () => {
-    const urls = Array.from({ length: 7 }, (_, i) => `u${i}`);
-    const findings = checkJobInvariants({
+  it("passes a Q108 bucket exactly at cap and flags one photo over", () => {
+    const atCap = Array.from(
+      { length: ADDITIONAL_PHOTOS_CAP },
+      (_, i) => `u${i}`,
+    );
+    const cleanFindings = checkJobInvariants({
       id: "j1",
-      formData: { [RESERVED_PHOTO_MAP_KEY]: { [Q108]: urls } },
-      photos: urls.map(photo),
+      formData: { [RESERVED_PHOTO_MAP_KEY]: { [Q108]: atCap } },
+      photos: atCap.map(photo),
     });
     expect(
-      findings.filter(
+      cleanFindings.filter(
         (f) => f.invariant === "cap-enforcement" && f.severity === "violation",
       ),
     ).toEqual([]);
+
+    const overCap = Array.from(
+      { length: ADDITIONAL_PHOTOS_CAP + 1 },
+      (_, i) => `u${i}`,
+    );
+    const overFindings = checkJobInvariants({
+      id: "j1",
+      formData: { [RESERVED_PHOTO_MAP_KEY]: { [Q108]: overCap } },
+      photos: overCap.map(photo),
+    });
+    const violations = overFindings.filter(
+      (f) => f.invariant === "cap-enforcement" && f.severity === "violation",
+    );
+    expect(violations).toHaveLength(1);
+    expect(violations[0].owner).toBe(Q108);
   });
 
   it("flags an unknown map owner id as info (not a violation)", () => {

@@ -32,8 +32,12 @@ export function getMultiPhotoCap(fieldId: string): number | undefined {
 // Q108 "Additional Photos" — a separate single-field bucket with its
 // own buffered cap. Not a member of MULTI_PHOTO_CAPS on purpose: its
 // ownership and UI semantics differ (admin-chosen membership, no drain).
+// Cap raised 7 → 25 on the client's request (2026-07-10: reinspections
+// need room for the full photo set). Size note: 25 compressed photos add
+// roughly 10–25MB to the PDF; Resend rejects emails over 40MB decoded,
+// and submit already degrades gracefully (email without attachment).
 export const ADDITIONAL_PHOTOS_FIELD_ID = "108_additional_photos";
-export const ADDITIONAL_PHOTOS_CAP = 7;
+export const ADDITIONAL_PHOTOS_CAP = 25;
 
 // Remarks/notes fields — 8 textareas that also accept photo attachments
 // in the new shape. Canonical ids verified against the extracted form
