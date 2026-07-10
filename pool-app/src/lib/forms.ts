@@ -51,6 +51,41 @@ export function otherTextKey(fieldId: string): string {
   return `${fieldId}_other_text`;
 }
 
+// --- Paired fields (e.g. "7. Pump Mfg" answered for Main AND Secondary
+// pump). Convention: a field with id `X_secondary` pairs with field `X`;
+// every renderer shows the two side by side as ONE question. Labels carry
+// the shared title and the column name separated by " — "
+// (e.g. "7. Pump Mfg — Main Pump" / "7. Pump Mfg — Secondary Pump").
+
+export const PAIRED_SECONDARY_SUFFIX = "_secondary";
+
+export function secondaryFieldFor(
+  field: FormField,
+  fields: FormField[],
+): FormField | undefined {
+  return fields.find((f) => f.id === field.id + PAIRED_SECONDARY_SUFFIX);
+}
+
+export function isSecondaryField(
+  field: FormField,
+  fields: FormField[],
+): boolean {
+  return (
+    field.id.endsWith(PAIRED_SECONDARY_SUFFIX) &&
+    fields.some((f) => f.id + PAIRED_SECONDARY_SUFFIX === field.id)
+  );
+}
+
+// "7. Pump Mfg — Main Pump" → { title: "7. Pump Mfg", column: "Main Pump" }
+export function splitPairedLabel(label: string): {
+  title: string;
+  column: string;
+} {
+  const idx = label.lastIndexOf(" — ");
+  if (idx < 0) return { title: label, column: "" };
+  return { title: label.slice(0, idx), column: label.slice(idx + 3) };
+}
+
 // The selected value's companion text, or null when the field has no
 // allowTextFor, the selection doesn't trigger text, or the text is blank.
 // Shared by the PDF and email renderers so both surfaces stay identical.

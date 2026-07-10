@@ -4,7 +4,10 @@ import { db } from "@/lib/db";
 import { jsPDF } from "jspdf";
 import {
   DEFAULT_TEMPLATE,
+  isSecondaryField,
   resolveOtherText,
+  secondaryFieldFor,
+  splitPairedLabel,
   type FormData,
   type FormField,
   type FormTemplate,
@@ -559,8 +562,26 @@ export async function generateJobPdf(
     }
 
     // --- Non-photo fields ---
+    // Paired fields (X + X_secondary, e.g. Pump Mfg Main/Secondary) render
+    // as ONE question row: shared numbered title, one value line per
+    // column. The secondary is skipped here and folded into its base row.
+    if (isSecondaryField(field, template.fields)) continue;
+    const pairedSecondary = secondaryFieldFor(field, template.fields);
+
     let displayValue: string;
-    if (field.type === "checkbox") {
+    let label = field.label; // preserve question numbering
+    if (pairedSecondary) {
+      const columnLine = (f: FormField) => {
+        const v = formData?.[f.id];
+        let d = typeof v === "string" && v.trim() ? v : "—";
+        const otherText = resolveOtherText(f, formData);
+        if (otherText) d = `${d} — ${otherText}`;
+        return `${splitPairedLabel(f.label).column || f.label}: ${d}`;
+      };
+      label = splitPairedLabel(field.label).title;
+      // splitTextToSize honors \n as hard line breaks.
+      displayValue = `${columnLine(field)}\n${columnLine(pairedSecondary)}`;
+    } else if (field.type === "checkbox") {
       displayValue = rawValue ? "Yes" : "No";
     } else if (typeof rawValue === "string" && rawValue.trim()) {
       displayValue = rawValue;
@@ -574,7 +595,6 @@ export async function generateJobPdf(
       displayValue = "—";
     }
 
-    const label = field.label; // preserve question numbering
     const labelWidth = 80;
 
     doc.setFont("helvetica", "bold");

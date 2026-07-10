@@ -310,6 +310,100 @@ describe("generateJobPdf — structured summary items (client ask #11)", () => {
   });
 });
 
+describe("generateJobPdf — paired Main/Secondary fields render as one row", () => {
+  it("draws the shared title once with one value line per column, secondary not drawn separately", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      name: null,
+      submittedBy: null,
+      submittedAt: null,
+      workerSignature: null,
+      photos: [],
+      formData: {
+        "7_pump_mfg": "Other",
+        "7_pump_mfg_other_text": "Aqua-Flo XT",
+        "7_pump_mfg_secondary": "Hayward",
+      },
+      template: {
+        id: "t1",
+        name: "Test Template",
+        fields: [
+          {
+            id: "7_pump_mfg",
+            type: "radio",
+            label: "7. Pump Mfg — Main Pump",
+            required: false,
+            options: ["Hayward", "Other"],
+            allowTextFor: ["Other"],
+            order: 0,
+          },
+          {
+            id: "7_pump_mfg_secondary",
+            type: "radio",
+            label: "7. Pump Mfg — Secondary Pump",
+            required: false,
+            options: ["Hayward", "Other", "N/a"],
+            allowTextFor: ["Other"],
+            order: 1,
+          },
+        ],
+      },
+    } as never);
+
+    const res = await generateJobPdf("job-1");
+    expect(res.success).toBe(true);
+
+    // One combined value block: both column lines in a single draw
+    // (the mock's splitTextToSize returns the raw string, \n included).
+    expect(
+      textWasDrawn("Main Pump: Other — Aqua-Flo XT\nSecondary Pump: Hayward"),
+    ).toBe(true);
+    // Shared numbered title drawn; per-column labels NOT drawn as rows.
+    expect(textWasDrawn("7. Pump Mfg")).toBe(true);
+    expect(textWasDrawn("7. Pump Mfg — Main Pump")).toBe(false);
+    expect(textWasDrawn("7. Pump Mfg — Secondary Pump")).toBe(false);
+  });
+
+  it("unanswered columns render an em-dash per line", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      name: null,
+      submittedBy: null,
+      submittedAt: null,
+      workerSignature: null,
+      photos: [],
+      formData: {},
+      template: {
+        id: "t1",
+        name: "Test Template",
+        fields: [
+          {
+            id: "8_pump_model",
+            type: "text",
+            label: "8. Pump Model — Main Pump",
+            required: false,
+            order: 0,
+          },
+          {
+            id: "8_pump_model_secondary",
+            type: "text",
+            label: "8. Pump Model — Secondary Pump",
+            required: false,
+            order: 1,
+          },
+        ],
+      },
+    } as never);
+
+    const res = await generateJobPdf("job-1");
+    expect(res.success).toBe(true);
+    expect(textWasDrawn("Main Pump: —\nSecondary Pump: —")).toBe(true);
+    expect(textWasDrawn("8. Pump Model")).toBe(true);
+  });
+});
+
 describe("generateJobPdf — allowTextFor companion text (client asks #5/#7)", () => {
   function jobWithRadio(formData: Record<string, unknown>) {
     return {

@@ -1,10 +1,14 @@
-// allowTextFor companion-text mechanism (client asks #5/#7/#36).
+// allowTextFor companion-text mechanism (client asks #5/#7/#36) and
+// paired Main/Secondary field helpers.
 import { describe, it, expect } from "vitest";
 import {
   buildFormSchema,
   getDefaultValues,
+  isSecondaryField,
   otherTextKey,
   resolveOtherText,
+  secondaryFieldFor,
+  splitPairedLabel,
   type FormField,
   type FormTemplate,
 } from "@/lib/forms";
@@ -61,6 +65,48 @@ describe("getDefaultValues with allowTextFor", () => {
     const defaults = getDefaultValues(template([radioField()]));
     expect(defaults["9_pump_hp"]).toBe("");
     expect(defaults["9_pump_hp_other_text"]).toBe("");
+  });
+});
+
+describe("paired field helpers", () => {
+  const main = radioField({
+    id: "7_pump_mfg",
+    label: "7. Pump Mfg — Main Pump",
+  });
+  const secondary = radioField({
+    id: "7_pump_mfg_secondary",
+    label: "7. Pump Mfg — Secondary Pump",
+  });
+  const lone = radioField({ id: "9_pump_hp", label: "9. Pump HP" });
+  const fields = [main, secondary, lone];
+
+  it("secondaryFieldFor finds X_secondary for X, nothing otherwise", () => {
+    expect(secondaryFieldFor(main, fields)?.id).toBe("7_pump_mfg_secondary");
+    expect(secondaryFieldFor(lone, fields)).toBeUndefined();
+    // A secondary has no secondary of its own.
+    expect(secondaryFieldFor(secondary, fields)).toBeUndefined();
+  });
+
+  it("isSecondaryField is true only when the base field exists", () => {
+    expect(isSecondaryField(secondary, fields)).toBe(true);
+    expect(isSecondaryField(main, fields)).toBe(false);
+    // Orphan *_secondary with no base is NOT treated as paired.
+    const orphan = radioField({
+      id: "99_orphan_secondary",
+      label: "99. Orphan",
+    });
+    expect(isSecondaryField(orphan, [...fields, orphan])).toBe(false);
+  });
+
+  it("splitPairedLabel splits on the LAST em-dash separator", () => {
+    expect(splitPairedLabel("7. Pump Mfg — Main Pump")).toEqual({
+      title: "7. Pump Mfg",
+      column: "Main Pump",
+    });
+    expect(splitPairedLabel("9. Pump HP")).toEqual({
+      title: "9. Pump HP",
+      column: "",
+    });
   });
 });
 

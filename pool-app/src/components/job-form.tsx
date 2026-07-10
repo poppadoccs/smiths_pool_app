@@ -28,7 +28,10 @@ import { Camera, Check, Loader2 } from "lucide-react";
 import {
   buildFormSchema,
   getDefaultValues,
+  isSecondaryField,
   otherTextKey,
+  secondaryFieldFor,
+  splitPairedLabel,
   type FormTemplate,
   type FormField,
   type FormData as JobFormData, // aliased to avoid collision with DOM FormData
@@ -210,8 +213,18 @@ export function JobForm({
 
       {/* Fields — with section headers for navigation */}
       {template.fields.map((field, i) => {
+        // A `X_secondary` field renders inside its base field's paired
+        // block (side-by-side columns under one question heading).
+        if (isSecondaryField(field, template.fields)) return null;
+        const secondary = secondaryFieldFor(field, template.fields);
+
         const prevSection = i > 0 ? template.fields[i - 1].section : undefined;
         const showSection = field.section && field.section !== prevSection;
+
+        const setCompanionValue = (key: string, value: string) =>
+          setValue(key as keyof JobFormData, value, {
+            shouldDirty: true,
+          });
 
         return (
           <div key={field.id}>
@@ -223,21 +236,29 @@ export function JobForm({
                 {field.section}
               </h3>
             )}
-            <FieldRenderer
-              field={field}
-              register={register}
-              control={control}
-              errors={errors}
-              disabled={disabled}
-              jobId={jobId}
-              jobPhotos={jobPhotos}
-              serverFormData={initialData}
-              setCompanionValue={(key, value) =>
-                setValue(key as keyof JobFormData, value, {
-                  shouldDirty: true,
-                })
-              }
-            />
+            {secondary ? (
+              <PairedFieldBlock
+                field={field}
+                secondary={secondary}
+                register={register}
+                control={control}
+                errors={errors}
+                disabled={disabled}
+                setCompanionValue={setCompanionValue}
+              />
+            ) : (
+              <FieldRenderer
+                field={field}
+                register={register}
+                control={control}
+                errors={errors}
+                disabled={disabled}
+                jobId={jobId}
+                jobPhotos={jobPhotos}
+                serverFormData={initialData}
+                setCompanionValue={setCompanionValue}
+              />
+            )}
           </div>
         );
       })}
@@ -348,6 +369,140 @@ function PhotoFieldInput({
         </div>
       )}
     />
+  );
+}
+
+// --- Paired question block ---
+// Renders a base field and its `_secondary` partner as ONE question:
+// shared heading, two side-by-side columns (stacked on narrow phones).
+// Column headers come from the label suffix after " — ".
+
+function PairedColumnControl({
+  field,
+  register,
+  control,
+  disabled,
+  setCompanionValue,
+  error,
+}: {
+  field: FormField;
+  register: UseFormRegister<JobFormData>;
+  control: Control<JobFormData>;
+  disabled: boolean;
+  setCompanionValue: (key: string, value: string) => void;
+  error?: string;
+}) {
+  if (field.type === "radio") {
+    return (
+      <Controller
+        name={field.id}
+        control={control}
+        render={({ field: rhf }) => (
+          <div className="space-y-1">
+            {field.options?.map((opt) => (
+              <label
+                key={opt}
+                className="-mx-1 flex min-h-[44px] cursor-pointer items-center gap-2.5 rounded-lg px-1 select-none active:bg-zinc-50"
+              >
+                <input
+                  type="radio"
+                  name={field.id}
+                  value={opt}
+                  checked={rhf.value === opt}
+                  onChange={() => {
+                    rhf.onChange(opt);
+                    if (
+                      field.allowTextFor?.length &&
+                      !field.allowTextFor.includes(opt)
+                    ) {
+                      setCompanionValue(otherTextKey(field.id), "");
+                    }
+                  }}
+                  disabled={disabled}
+                  className="size-6 accent-zinc-900"
+                />
+                <span className="text-base">{opt}</span>
+              </label>
+            ))}
+            {field.allowTextFor?.includes(rhf.value as string) && (
+              <Input
+                aria-label={`${field.label} — details`}
+                placeholder="Please specify..."
+                className="min-h-[48px] text-base"
+                disabled={disabled}
+                {...register(otherTextKey(field.id))}
+              />
+            )}
+            {error && <p className="text-sm text-red-600">{error}</p>}
+          </div>
+        )}
+      />
+    );
+  }
+
+  // text / number / etc. — single input column
+  return (
+    <div className="space-y-1">
+      <Input
+        aria-label={field.label}
+        type="text"
+        placeholder={field.placeholder}
+        className="min-h-[48px] text-base"
+        aria-invalid={!!error}
+        disabled={disabled}
+        {...register(field.id)}
+      />
+      {error && <p className="text-sm text-red-600">{error}</p>}
+    </div>
+  );
+}
+
+function PairedFieldBlock({
+  field,
+  secondary,
+  register,
+  control,
+  errors,
+  disabled = false,
+  setCompanionValue,
+}: {
+  field: FormField;
+  secondary: FormField;
+  register: UseFormRegister<JobFormData>;
+  control: Control<JobFormData>;
+  errors: FieldErrors<JobFormData>;
+  disabled?: boolean;
+  setCompanionValue: (key: string, value: string) => void;
+}) {
+  const { title } = splitPairedLabel(field.label);
+  return (
+    <div className="space-y-2">
+      <Label className="text-base">
+        {title}
+        {field.required && <span className="ml-0.5 text-red-500">*</span>}
+      </Label>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {[field, secondary].map((f, i) => (
+          <div
+            key={f.id}
+            className="space-y-1.5 rounded-lg border border-zinc-200 bg-zinc-50/40 p-3"
+          >
+            <p className="text-sm font-semibold text-zinc-600">
+              {splitPairedLabel(f.label).column ||
+                (i === 0 ? "Main" : "Secondary")}
+            </p>
+            <PairedColumnControl
+              field={f}
+              register={register}
+              control={control}
+              disabled={disabled}
+              setCompanionValue={setCompanionValue}
+              error={errors[f.id]?.message as string | undefined}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
