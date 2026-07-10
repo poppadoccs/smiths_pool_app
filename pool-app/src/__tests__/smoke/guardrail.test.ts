@@ -142,7 +142,7 @@ const minimalFormData = { customer_name: "Smoke" };
 // ---------------------------------------------------------------------------
 
 describe("smoke: invariant constants", () => {
-  it("caps: MULTI_PHOTO_CAPS, ADDITIONAL_PHOTOS_CAP, REMARKS_PHOTO_CAP match locked v1 values", () => {
+  it("caps: MULTI_PHOTO_CAPS, ADDITIONAL_PHOTOS_CAP, REMARKS_PHOTO_CAP match locked values", () => {
     expect(MULTI_PHOTO_CAPS["5_picture_of_pool_and_spa_if_applicable"]).toBe(5);
     expect(MULTI_PHOTO_CAPS["16_photo_of_pool_pump"]).toBe(5);
     expect(MULTI_PHOTO_CAPS["25_picture_of_cartridge"]).toBe(4);
@@ -152,7 +152,8 @@ describe("smoke: invariant constants", () => {
     expect(
       MULTI_PHOTO_CAPS["71_picture_of_leaks_on_valves_if_applicable"],
     ).toBe(6);
-    expect(ADDITIONAL_PHOTOS_CAP).toBe(7);
+    // 7 → 25 per client request 2026-07-10 (reinspection photo sets).
+    expect(ADDITIONAL_PHOTOS_CAP).toBe(25);
     expect(REMARKS_PHOTO_CAP).toBe(8);
   });
 

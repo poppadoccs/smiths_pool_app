@@ -357,7 +357,7 @@ export async function assignMultiFieldPhotos(
 // The savePhotoAssignments action treats Q108 as a tag and never persists
 // those photos as a field mapping (they "drain" into Q108 at render time).
 // This action, by contrast, writes an explicit list of URLs that the admin
-// chose for Q108, capped at ADDITIONAL_PHOTOS_CAP (7, locked 2026-04-20).
+// chose for Q108, capped at ADDITIONAL_PHOTOS_CAP (25 since 2026-07-10).
 //
 // Persisted truth on save:
 //   formData["__photoAssignmentsByField"]["108_additional_photos"] = urls[]

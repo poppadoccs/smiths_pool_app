@@ -99,7 +99,7 @@ describe("MultiPhotoField", () => {
     );
   });
 
-  it("Q108 uses the Q108 cap of 7 and routes writes through assignAdditionalPhotos", async () => {
+  it("Q108 uses the Q108 cap of 25 and routes writes through assignAdditionalPhotos", async () => {
     render(
       <MultiPhotoField
         jobId="job-1"
@@ -109,7 +109,7 @@ describe("MultiPhotoField", () => {
       />,
     );
     expect(screen.getByTestId(`multi-photo-count-${Q108_ID}`).textContent).toBe(
-      "(0 of 7)",
+      "(0 of 25)",
     );
 
     // Open picker, click the one gallery photo.
