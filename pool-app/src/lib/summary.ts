@@ -11,6 +11,15 @@ export type SummaryItem = { text: string; photos: string[] };
 
 export const RESERVED_SUMMARY_KEY = "__summary_items";
 
+// The template field that hosts the structured summary editor. The legacy
+// text blob lives at formData[SUMMARY_FIELD_ID]; structured items live at
+// formData[RESERVED_SUMMARY_KEY].
+export const SUMMARY_FIELD_ID = "107_summary";
+
+// Hard cap on a single item's text — generous for field notes, small
+// enough to keep the PDF/email payload sane.
+export const SUMMARY_TEXT_MAX_LENGTH = 4000;
+
 // Capacity policy (customer source of truth, locked 2026-04-20):
 //   per-item cap = hard limit per individual summary item
 //   total cap    = hard limit across all summary items combined

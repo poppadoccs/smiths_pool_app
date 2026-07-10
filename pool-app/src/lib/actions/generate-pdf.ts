@@ -4,6 +4,10 @@ import { db } from "@/lib/db";
 import { jsPDF } from "jspdf";
 import {
   DEFAULT_TEMPLATE,
+  isSecondaryField,
+  resolveOtherText,
+  secondaryFieldFor,
+  splitPairedLabel,
   type FormData,
   type FormField,
   type FormTemplate,
@@ -15,6 +19,11 @@ import {
   remarksPhotoOwnerIdFor,
   REMARKS_FIELD_IDS,
 } from "@/lib/multi-photo";
+import {
+  collectSummaryPhotoUrls,
+  parseSummaryItems,
+  SUMMARY_FIELD_ID,
+} from "@/lib/summary";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -123,24 +132,23 @@ export async function generateJobPdf(
     "This inspection does not imply that the pool or pool/spa is not leaking or that " +
     "if there is a visible leak that it is the only leak.";
 
+  // Centered like the title/contact block above them (client request:
+  // "can the text under the logo on the first page be centered").
   doc.setFontSize(7.5);
   doc.setFont("helvetica", "bold");
   const d1Lines = doc.splitTextToSize(disclaimer1, CONTENT_WIDTH);
-  doc.text(d1Lines, MARGIN, y);
+  doc.text(d1Lines, PAGE_WIDTH / 2, y, { align: "center" });
   y += d1Lines.length * 3.5;
 
   doc.setFont("helvetica", "normal");
   const d2Lines = doc.splitTextToSize(disclaimer2, CONTENT_WIDTH);
-  doc.text(d2Lines, MARGIN, y);
+  doc.text(d2Lines, PAGE_WIDTH / 2, y, { align: "center" });
   y += d2Lines.length * 3.5 + 6;
 
-  // --- Job title ---
-  const jobTitle =
-    job.name || (job.jobNumber ? `Job #${job.jobNumber}` : `Job ${job.id}`);
-  doc.setFontSize(14);
-  doc.setFont("helvetica", "bold");
-  doc.text(jobTitle, MARGIN, y);
-  y += 6;
+  // NOTE: the bold job-title block that used to render here was removed on
+  // client request — job.name is almost always the customer's name, which
+  // "1. Inspection performed for" repeats immediately below. The job name
+  // still reaches the office via the email subject and the PDF filename.
 
   // --- Form fields ---
   doc.setFontSize(10);
@@ -277,6 +285,22 @@ export async function generateJobPdf(
     if (!ownerId) continue;
     const urls = readFieldPhotoUrls(formData, ownerId);
     for (const url of urls) {
+      const idx = allJobPhotosArr.findIndex(
+        (p, i) => !consumedPhotoIdxs.has(i) && p.url === url,
+      );
+      if (idx >= 0) consumedPhotoIdxs.add(idx);
+    }
+  }
+
+  // Pass 2.6 — Summary-item consumption. Photos attached to structured
+  // summary bullets (formData["__summary_items"]) render inline under the
+  // "107. Summary" block below; consume them here so they never drain
+  // under Q108 as leftovers. Like remarks photos, this is consumption
+  // only — the render itself happens at the summary field branch and is
+  // independently gated by excludedUrlSet.
+  const summaryItems = parseSummaryItems(formData);
+  if (summaryItems) {
+    for (const url of collectSummaryPhotoUrls(summaryItems)) {
       const idx = allJobPhotosArr.findIndex(
         (p, i) => !consumedPhotoIdxs.has(i) && p.url === url,
       );
@@ -463,17 +487,114 @@ export async function generateJobPdf(
       continue;
     }
 
+    // --- Structured summary: bulleted items with inline photos ---
+    // Only when __summary_items exists (parseSummaryItems non-null);
+    // legacy jobs whose 107_summary holds a plain string fall through to
+    // the generic label/value row below, unchanged.
+    if (field.id === SUMMARY_FIELD_ID && summaryItems !== null) {
+      // Heading — full-width bold label, like a section
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      const headingLines = doc.splitTextToSize(field.label, CONTENT_WIDTH);
+      const headingH = headingLines.length * 4 + 2;
+      if (y + headingH + 5 > 280) {
+        doc.addPage();
+        y = MARGIN;
+      }
+      doc.text(headingLines, MARGIN, y);
+      y += headingH;
+
+      if (summaryItems.length === 0) {
+        doc.setFont("helvetica", "normal");
+        doc.text("—", MARGIN + 4, y);
+        y += 5;
+        continue;
+      }
+
+      for (const item of summaryItems) {
+        // Bullet text — never separate the bullet from its first line.
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+        const text = item.text.trim() || "(no notes)";
+        const itemLines = doc.splitTextToSize(text, CONTENT_WIDTH - 8);
+        const itemH = itemLines.length * 4 + 2;
+        if (y + itemH > 280) {
+          doc.addPage();
+          y = MARGIN;
+        }
+        doc.text("•", MARGIN + 2, y);
+        doc.text(itemLines, MARGIN + 7, y);
+        y += itemH;
+
+        // Photos under the bullet — same fetch/fit/center pipeline as
+        // every other photo, honoring per-photo PDF exclusion.
+        const itemUrls = item.photos.filter((u) => !excludedUrlSet.has(u));
+        for (const url of itemUrls) {
+          try {
+            const res = await fetch(url);
+            const buf = await res.arrayBuffer();
+            const b64 = Buffer.from(buf).toString("base64");
+            const imgProps = doc.getImageProperties(b64);
+            const { imgW, imgH } = fitPhoto(imgProps);
+            const imgX = MARGIN + (CONTENT_WIDTH - imgW) / 2;
+            if (y + imgH + 6 > 280) {
+              doc.addPage();
+              y = MARGIN;
+            }
+            doc.addImage(b64, "JPEG", imgX, y, imgW, imgH, undefined, "FAST");
+            y += imgH + 4;
+          } catch {
+            if (y + 5 > 280) {
+              doc.addPage();
+              y = MARGIN;
+            }
+            doc.setFont("helvetica", "italic");
+            doc.setFontSize(8);
+            doc.text("[photo could not be loaded]", MARGIN + 7, y);
+            y += 5;
+            doc.setFontSize(9);
+          }
+        }
+        y += 1;
+      }
+      y += 2;
+      continue;
+    }
+
     // --- Non-photo fields ---
+    // Paired fields (X + X_secondary, e.g. Pump Mfg Main/Secondary) render
+    // as ONE question row: shared numbered title, one value line per
+    // column. The secondary is skipped here and folded into its base row.
+    if (isSecondaryField(field, template.fields)) continue;
+    const pairedSecondary = secondaryFieldFor(field, template.fields);
+
     let displayValue: string;
-    if (field.type === "checkbox") {
+    let label = field.label; // preserve question numbering
+    if (pairedSecondary) {
+      const columnLine = (f: FormField) => {
+        const v = formData?.[f.id];
+        let d = typeof v === "string" && v.trim() ? v : "—";
+        const otherText = resolveOtherText(f, formData);
+        if (otherText) d = `${d} — ${otherText}`;
+        return `${splitPairedLabel(f.label).column || f.label}: ${d}`;
+      };
+      label = splitPairedLabel(field.label).title;
+      // splitTextToSize honors \n as hard line breaks.
+      displayValue = `${columnLine(field)}\n${columnLine(pairedSecondary)}`;
+    } else if (field.type === "checkbox") {
       displayValue = rawValue ? "Yes" : "No";
     } else if (typeof rawValue === "string" && rawValue.trim()) {
       displayValue = rawValue;
+      // Companion free-text (e.g. "Other — Aqua-Flo"): appended when the
+      // selected option is an allowTextFor trigger and details were typed.
+      const otherText = resolveOtherText(field, formData);
+      if (otherText) {
+        displayValue = `${rawValue} — ${otherText}`;
+      }
     } else {
       displayValue = "—";
     }
 
-    const label = field.label; // preserve question numbering
     const labelWidth = 80;
 
     doc.setFont("helvetica", "bold");

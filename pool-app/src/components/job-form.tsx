@@ -28,10 +28,16 @@ import { Camera, Check, Loader2 } from "lucide-react";
 import {
   buildFormSchema,
   getDefaultValues,
+  isSecondaryField,
+  otherTextKey,
+  secondaryFieldFor,
+  splitPairedLabel,
   type FormTemplate,
   type FormField,
   type FormData as JobFormData, // aliased to avoid collision with DOM FormData
 } from "@/lib/forms";
+import { SummaryItemsEditor } from "@/components/summary-items-editor";
+import { SUMMARY_FIELD_ID } from "@/lib/summary";
 import { saveFormData } from "@/lib/actions/forms";
 import { StickyFormNav } from "@/components/sticky-form-nav";
 import { ImportFromPaper } from "@/components/import-from-paper";
@@ -100,8 +106,12 @@ export function JobForm({
 }) {
   const schema = useMemo(() => buildFormSchema(template), [template]);
   const defaults = useMemo(() => {
-    if (initialData) return initialData;
-    return getDefaultValues(template);
+    // Layer server data over template defaults so fields added to the
+    // template AFTER this draft was created (and their companion
+    // `_other_text` keys) still start controlled with "" instead of
+    // undefined.
+    const base = getDefaultValues(template);
+    return initialData ? { ...base, ...initialData } : base;
   }, [template, initialData]);
 
   const {
@@ -129,7 +139,9 @@ export function JobForm({
     if (disabled) return;
     const draft = loadDraft(jobId);
     if (draft) {
-      reset(draft);
+      // Same layering as `defaults`: a draft saved before a template change
+      // may lack newer field keys — never let those go uncontrolled.
+      reset({ ...getDefaultValues(template), ...draft });
       toast.info("Draft restored");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -201,8 +213,18 @@ export function JobForm({
 
       {/* Fields — with section headers for navigation */}
       {template.fields.map((field, i) => {
+        // A `X_secondary` field renders inside its base field's paired
+        // block (side-by-side columns under one question heading).
+        if (isSecondaryField(field, template.fields)) return null;
+        const secondary = secondaryFieldFor(field, template.fields);
+
         const prevSection = i > 0 ? template.fields[i - 1].section : undefined;
         const showSection = field.section && field.section !== prevSection;
+
+        const setCompanionValue = (key: string, value: string) =>
+          setValue(key as keyof JobFormData, value, {
+            shouldDirty: true,
+          });
 
         return (
           <div key={field.id}>
@@ -214,16 +236,29 @@ export function JobForm({
                 {field.section}
               </h3>
             )}
-            <FieldRenderer
-              field={field}
-              register={register}
-              control={control}
-              errors={errors}
-              disabled={disabled}
-              jobId={jobId}
-              jobPhotos={jobPhotos}
-              serverFormData={initialData}
-            />
+            {secondary ? (
+              <PairedFieldBlock
+                field={field}
+                secondary={secondary}
+                register={register}
+                control={control}
+                errors={errors}
+                disabled={disabled}
+                setCompanionValue={setCompanionValue}
+              />
+            ) : (
+              <FieldRenderer
+                field={field}
+                register={register}
+                control={control}
+                errors={errors}
+                disabled={disabled}
+                jobId={jobId}
+                jobPhotos={jobPhotos}
+                serverFormData={initialData}
+                setCompanionValue={setCompanionValue}
+              />
+            )}
           </div>
         );
       })}
@@ -337,6 +372,140 @@ function PhotoFieldInput({
   );
 }
 
+// --- Paired question block ---
+// Renders a base field and its `_secondary` partner as ONE question:
+// shared heading, two side-by-side columns (stacked on narrow phones).
+// Column headers come from the label suffix after " — ".
+
+function PairedColumnControl({
+  field,
+  register,
+  control,
+  disabled,
+  setCompanionValue,
+  error,
+}: {
+  field: FormField;
+  register: UseFormRegister<JobFormData>;
+  control: Control<JobFormData>;
+  disabled: boolean;
+  setCompanionValue: (key: string, value: string) => void;
+  error?: string;
+}) {
+  if (field.type === "radio") {
+    return (
+      <Controller
+        name={field.id}
+        control={control}
+        render={({ field: rhf }) => (
+          <div className="space-y-1">
+            {field.options?.map((opt) => (
+              <label
+                key={opt}
+                className="-mx-1 flex min-h-[44px] cursor-pointer items-center gap-2.5 rounded-lg px-1 select-none active:bg-zinc-50"
+              >
+                <input
+                  type="radio"
+                  name={field.id}
+                  value={opt}
+                  checked={rhf.value === opt}
+                  onChange={() => {
+                    rhf.onChange(opt);
+                    if (
+                      field.allowTextFor?.length &&
+                      !field.allowTextFor.includes(opt)
+                    ) {
+                      setCompanionValue(otherTextKey(field.id), "");
+                    }
+                  }}
+                  disabled={disabled}
+                  className="size-6 accent-zinc-900"
+                />
+                <span className="text-base">{opt}</span>
+              </label>
+            ))}
+            {field.allowTextFor?.includes(rhf.value as string) && (
+              <Input
+                aria-label={`${field.label} — details`}
+                placeholder="Please specify..."
+                className="min-h-[48px] text-base"
+                disabled={disabled}
+                {...register(otherTextKey(field.id))}
+              />
+            )}
+            {error && <p className="text-sm text-red-600">{error}</p>}
+          </div>
+        )}
+      />
+    );
+  }
+
+  // text / number / etc. — single input column
+  return (
+    <div className="space-y-1">
+      <Input
+        aria-label={field.label}
+        type="text"
+        placeholder={field.placeholder}
+        className="min-h-[48px] text-base"
+        aria-invalid={!!error}
+        disabled={disabled}
+        {...register(field.id)}
+      />
+      {error && <p className="text-sm text-red-600">{error}</p>}
+    </div>
+  );
+}
+
+function PairedFieldBlock({
+  field,
+  secondary,
+  register,
+  control,
+  errors,
+  disabled = false,
+  setCompanionValue,
+}: {
+  field: FormField;
+  secondary: FormField;
+  register: UseFormRegister<JobFormData>;
+  control: Control<JobFormData>;
+  errors: FieldErrors<JobFormData>;
+  disabled?: boolean;
+  setCompanionValue: (key: string, value: string) => void;
+}) {
+  const { title } = splitPairedLabel(field.label);
+  return (
+    <div className="space-y-2">
+      <Label className="text-base">
+        {title}
+        {field.required && <span className="ml-0.5 text-red-500">*</span>}
+      </Label>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {[field, secondary].map((f, i) => (
+          <div
+            key={f.id}
+            className="space-y-1.5 rounded-lg border border-zinc-200 bg-zinc-50/40 p-3"
+          >
+            <p className="text-sm font-semibold text-zinc-600">
+              {splitPairedLabel(f.label).column ||
+                (i === 0 ? "Main" : "Secondary")}
+            </p>
+            <PairedColumnControl
+              field={f}
+              register={register}
+              control={control}
+              disabled={disabled}
+              setCompanionValue={setCompanionValue}
+              error={errors[f.id]?.message as string | undefined}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // --- Field renderer ---
 
 function FieldRenderer({
@@ -348,6 +517,7 @@ function FieldRenderer({
   jobId,
   jobPhotos,
   serverFormData,
+  setCompanionValue,
 }: {
   field: FormField;
   register: UseFormRegister<JobFormData>;
@@ -357,6 +527,7 @@ function FieldRenderer({
   jobId: string;
   jobPhotos: PhotoMetadata[];
   serverFormData: JobFormData | null;
+  setCompanionValue: (key: string, value: string) => void;
 }) {
   const error = errors[field.id]?.message as string | undefined;
   const fieldId = `field-${field.id}`;
@@ -416,6 +587,20 @@ function FieldRenderer({
       );
 
     case "textarea":
+      // "107. Summary" gets the structured bullet-item editor (text +
+      // photos per bullet) instead of the plain textarea. Legacy blob text
+      // stays readable inside the editor and is never auto-deleted.
+      if (field.id === SUMMARY_FIELD_ID) {
+        return (
+          <SummaryItemsEditor
+            jobId={jobId}
+            fieldLabel={field.label}
+            jobPhotos={jobPhotos}
+            formData={serverFormData}
+            disabled={disabled}
+          />
+        );
+      }
       return (
         <div className="space-y-1.5">
           <Label htmlFor={fieldId} className="text-base">
@@ -538,7 +723,18 @@ function FieldRenderer({
                       name={field.id}
                       value={opt}
                       checked={rhf.value === opt}
-                      onChange={() => rhf.onChange(opt)}
+                      onChange={() => {
+                        rhf.onChange(opt);
+                        // Switching to a non-triggering option clears the
+                        // companion text so stale details never linger in
+                        // the saved data.
+                        if (
+                          field.allowTextFor?.length &&
+                          !field.allowTextFor.includes(opt)
+                        ) {
+                          setCompanionValue(otherTextKey(field.id), "");
+                        }
+                      }}
                       disabled={disabled}
                       className="size-6 accent-zinc-900"
                     />
@@ -546,6 +742,15 @@ function FieldRenderer({
                   </label>
                 ))}
               </div>
+              {field.allowTextFor?.includes(rhf.value as string) && (
+                <Input
+                  aria-label={`${field.label} — details`}
+                  placeholder="Please specify..."
+                  className="min-h-[48px] text-base"
+                  disabled={disabled}
+                  {...register(otherTextKey(field.id))}
+                />
+              )}
               {error && <p className="text-sm text-red-600">{error}</p>}
             </div>
           )}
