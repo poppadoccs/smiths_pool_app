@@ -18,6 +18,10 @@ type SubmissionEmailProps = {
   template: FormTemplate;
   photos: PhotoMetadata[];
   editUrl?: string;
+  // True when the PDF was generated but too large to attach (Resend
+  // rejects whole emails near 40MB) — renders a notice pointing the
+  // office at the in-app Download PDF button instead.
+  pdfOmittedTooLarge?: boolean;
 };
 
 /**
@@ -32,6 +36,7 @@ export function buildSubmissionEmail({
   template,
   photos,
   editUrl,
+  pdfOmittedTooLarge = false,
 }: SubmissionEmailProps): string {
   const summaryItems = parseSummaryItems(formData);
 
@@ -200,6 +205,23 @@ export function buildSubmissionEmail({
     <p style="font-size: 12px; color: #888; margin: 0 0 20px 0;">
       Open this job in the pool forms app so it can be edited and re-sent.
     </p>
+    `
+        : ""
+    }
+
+    ${
+      pdfOmittedTooLarge
+        ? `
+    <div style="background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 12px 14px; margin: 0 0 20px 0;">
+      <p style="font-size: 14px; color: #92400e; margin: 0; font-weight: 600;">
+        PDF report not attached — too large for email
+      </p>
+      <p style="font-size: 13px; color: #92400e; margin: 4px 0 0 0;">
+        This job has a lot of photos, so the PDF exceeds the email size limit.
+        Open the job in the app and use <strong>Download PDF</strong> to get the
+        full report. All photos are also below in this email.
+      </p>
+    </div>
     `
         : ""
     }

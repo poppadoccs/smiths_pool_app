@@ -156,7 +156,14 @@ export async function submitJob(
     content: string;
     contentType: string;
   };
+  // Resend rejects the ENTIRE email above ~40MB decoded — losing the
+  // submission notice, not just the attachment. Guard: if the base64
+  // attachment alone would push the email near the ceiling, send WITHOUT
+  // the attachment and tell the office to download the PDF from the app
+  // (no size limit there). 35MB leaves margin for the HTML body.
+  const MAX_PDF_ATTACHMENT_BASE64_BYTES = 35 * 1024 * 1024;
   let pdfAttachment: PdfAttachment | undefined;
+  let pdfOmittedTooLarge = false;
   try {
     const safeFilename =
       jobTitle.replace(/[^a-z0-9]/gi, "-").toLowerCase() || "report";
@@ -166,11 +173,18 @@ export async function submitJob(
         /^data:application\/pdf(?:;[^,]*)?;base64,(.+)$/,
       );
       if (match) {
-        pdfAttachment = {
-          filename: `${safeFilename}-report.pdf`,
-          content: match[1],
-          contentType: "application/pdf",
-        };
+        if (match[1].length > MAX_PDF_ATTACHMENT_BASE64_BYTES) {
+          pdfOmittedTooLarge = true;
+          console.warn(
+            `[submit] PDF attachment too large for email (${Math.round(match[1].length / 1024 / 1024)}MB base64 > 35MB cap) — sending without attachment, office downloads from app`,
+          );
+        } else {
+          pdfAttachment = {
+            filename: `${safeFilename}-report.pdf`,
+            content: match[1],
+            contentType: "application/pdf",
+          };
+        }
       } else {
         console.error(
           "[submit] PDF data URI format unexpected, skipping attachment",
@@ -204,6 +218,7 @@ export async function submitJob(
     template,
     photos,
     editUrl,
+    pdfOmittedTooLarge,
   });
 
   // Two failure modes the worker must see as "saved-but-unsent":

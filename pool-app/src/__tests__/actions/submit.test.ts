@@ -231,4 +231,44 @@ describe("submitJob", () => {
     expect(result.success).toBe(true);
     expect(result.emailSent).toBe(false);
   });
+
+  it("attaches the PDF and shows no size notice for a normal-size report", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue(mockJob() as never);
+
+    const result = await submitJob("job-1", "Mike");
+    expect(result.success).toBe(true);
+
+    const sendArgs = mockSend.mock.calls[0][0] as {
+      attachments?: unknown[];
+      html: string;
+    };
+    expect(sendArgs.attachments).toHaveLength(1);
+    expect(sendArgs.html).not.toContain("PDF report not attached");
+  });
+
+  it("skips the attachment and adds an email notice when the PDF exceeds the 35MB cap", async () => {
+    const { generateJobPdf } = await import("@/lib/actions/generate-pdf");
+    // 36MB of base64 payload — over the 35MB guard.
+    vi.mocked(generateJobPdf).mockResolvedValueOnce({
+      success: true,
+      data: `data:application/pdf;filename=generated.pdf;base64,${"A".repeat(36 * 1024 * 1024)}`,
+    });
+    vi.mocked(db.job.findUnique).mockResolvedValue(mockJob() as never);
+
+    const result = await submitJob("job-1", "Mike");
+
+    // Submission still succeeds and the email still goes out.
+    expect(result.success).toBe(true);
+    expect(result.emailSent).toBe(true);
+
+    const sendArgs = mockSend.mock.calls[0][0] as {
+      attachments?: unknown[];
+      html: string;
+    };
+    // No attachment — Resend would reject the whole email above ~40MB.
+    expect(sendArgs.attachments).toBeUndefined();
+    // The office is told where to get the full report instead.
+    expect(sendArgs.html).toContain("PDF report not attached");
+    expect(sendArgs.html).toContain("Download PDF");
+  });
 });
