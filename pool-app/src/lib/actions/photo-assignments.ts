@@ -59,7 +59,8 @@ function hasLegacyPhotoMirror(fieldId: string): boolean {
 // copies built by the caller from the fresh DB read.
 function stealOneOwner(
   currentMap: Record<string, unknown>,
-  next: FormData,
+  existing: FormData,
+  patch: FormData,
   templatePhotoFieldIds: readonly string[],
   targetFieldId: string,
   incomingUrls: string[],
@@ -67,7 +68,9 @@ function stealOneOwner(
   if (incomingUrls.length === 0) return;
   const incomingSet = new Set(incomingUrls);
 
-  // Pass 1: map-backed losers.
+  // Pass 1: map-backed losers. Mirror syncs are written into `patch`
+  // (the keys this action will merge), never into a full formData copy —
+  // see mergeDraftFormDataPatch for why (ultrareview bug_006).
   for (const [fid, entry] of Object.entries(currentMap)) {
     if (fid === targetFieldId) continue;
     if (!Array.isArray(entry)) continue;
@@ -89,7 +92,7 @@ function stealOneOwner(
       currentMap[fid] = filtered;
     }
     if (hasLegacyPhotoMirror(fid)) {
-      next[fid] = filtered[0] ?? "";
+      patch[fid] = filtered[0] ?? "";
     }
   }
 
@@ -102,17 +105,39 @@ function stealOneOwner(
   // in two places: the new owner's map entry AND Q108's stale mirror.
   // The target-owner exclusion above is preserved — only the skip for
   // Q108 as a *losing* field is removed.
+  // Reads see Pass 1's writes first (patch wins over existing) so a
+  // mirror already synced above is never re-evaluated against stale data.
   for (const fid of templatePhotoFieldIds) {
     if (fid === targetFieldId) continue;
-    const current = next[fid];
+    const current = patch[fid] !== undefined ? patch[fid] : existing[fid];
     if (
       typeof current === "string" &&
       current.length > 0 &&
       incomingSet.has(current)
     ) {
-      next[fid] = "";
+      patch[fid] = "";
     }
   }
+}
+
+// Atomic single-statement jsonb merge of ONLY the keys an action owns,
+// DRAFT-guarded (ultrareview bug_006). Mirrors saveFormData's strategy:
+// a concurrent RHF autosave keystroke or saveSummaryItems write can land
+// anywhere around this statement and neither side clobbers the other's
+// keys. Known limit: the reserved map is a single jsonb key, so two
+// SIMULTANEOUS assignment actions still last-write-win against each
+// other's map (same as the previous full-replace behavior) — the fix
+// removes the cross-writer clobber of unrelated formData keys.
+async function mergeDraftFormDataPatch(
+  jobId: string,
+  patch: FormData,
+): Promise<number> {
+  const patchJson = JSON.stringify(patch);
+  return db.$executeRaw`
+    UPDATE jobs
+    SET form_data = COALESCE(form_data, '{}'::jsonb) || ${patchJson}::jsonb
+    WHERE id = ${jobId} AND status::text = 'DRAFT'
+  `;
 }
 
 // Payload contract (v1):
@@ -229,17 +254,14 @@ export async function savePhotoAssignments(
   // Deterministic rewrite of ONLY legacy (non-map-backed) photo field
   // mirrors. Map-backed fields — their map entries and their mirrors —
   // stay untouched here, which is what keeps map and mirror consistent.
-  const next: FormData = { ...existing };
+  const patch: FormData = {};
   for (const fieldId of legacyPhotoFieldIds) {
-    next[fieldId] = fieldToUrl.get(fieldId) ?? "";
+    patch[fieldId] = fieldToUrl.get(fieldId) ?? "";
   }
-  next[REVIEWED_FLAG] = true;
+  patch[REVIEWED_FLAG] = true;
 
-  const updated = await db.job.updateMany({
-    where: { id: jobId, status: "DRAFT" },
-    data: { formData: next as unknown as object },
-  });
-  if (updated.count === 0) {
+  const affected = await mergeDraftFormDataPatch(jobId, patch);
+  if (affected === 0) {
     return { success: false, error: "Job is no longer editable" };
   }
 
@@ -322,13 +344,20 @@ export async function assignMultiFieldPhotos(
       ? { ...(rawMap as Record<string, unknown>) }
       : {};
 
-  const next: FormData = { ...existing };
+  const patch: FormData = {};
 
   // One-photo-one-owner: strip incoming URLs from every OTHER map entry
   // AND from every OTHER template photo field's legacy mirror. The mirror
   // sweep closes the legacy-only-owner hole where a URL was previously
   // held via formData[fid] alone (no map entry).
-  stealOneOwner(currentMap, next, templatePhotoFieldIds, fieldId, unique);
+  stealOneOwner(
+    currentMap,
+    existing,
+    patch,
+    templatePhotoFieldIds,
+    fieldId,
+    unique,
+  );
 
   if (unique.length > 0) {
     currentMap[fieldId] = unique;
@@ -336,15 +365,12 @@ export async function assignMultiFieldPhotos(
     delete currentMap[fieldId];
   }
 
-  next[RESERVED_PHOTO_MAP_KEY] = currentMap;
-  next[fieldId] = unique[0] ?? "";
-  next[REVIEWED_FLAG] = true;
+  patch[RESERVED_PHOTO_MAP_KEY] = currentMap;
+  patch[fieldId] = unique[0] ?? "";
+  patch[REVIEWED_FLAG] = true;
 
-  const updated = await db.job.updateMany({
-    where: { id: jobId, status: "DRAFT" },
-    data: { formData: next as unknown as object },
-  });
-  if (updated.count === 0) {
+  const affected = await mergeDraftFormDataPatch(jobId, patch);
+  if (affected === 0) {
     return { success: false, error: "Job is no longer editable" };
   }
 
@@ -427,7 +453,7 @@ export async function assignAdditionalPhotos(
       ? { ...(rawMap as Record<string, unknown>) }
       : {};
 
-  const next: FormData = { ...existing };
+  const patch: FormData = {};
 
   // One-photo-one-owner: strip incoming URLs from every OTHER map entry
   // AND from every OTHER template photo field's legacy mirror. Q108 has
@@ -435,7 +461,8 @@ export async function assignAdditionalPhotos(
   // from losing-side map entries and from mirror-only owners elsewhere.
   stealOneOwner(
     currentMap,
-    next,
+    existing,
+    patch,
     templatePhotoFieldIds,
     ADDITIONAL_PHOTOS_FIELD_ID,
     unique,
@@ -447,14 +474,11 @@ export async function assignAdditionalPhotos(
     delete currentMap[ADDITIONAL_PHOTOS_FIELD_ID];
   }
 
-  next[RESERVED_PHOTO_MAP_KEY] = currentMap;
-  next[REVIEWED_FLAG] = true;
+  patch[RESERVED_PHOTO_MAP_KEY] = currentMap;
+  patch[REVIEWED_FLAG] = true;
 
-  const updated = await db.job.updateMany({
-    where: { id: jobId, status: "DRAFT" },
-    data: { formData: next as unknown as object },
-  });
-  if (updated.count === 0) {
+  const affected = await mergeDraftFormDataPatch(jobId, patch);
+  if (affected === 0) {
     return { success: false, error: "Job is no longer editable" };
   }
 
@@ -541,13 +565,20 @@ export async function assignRemarksFieldPhotos(
       ? { ...(rawMap as Record<string, unknown>) }
       : {};
 
-  const next: FormData = { ...existing };
+  const patch: FormData = {};
 
   // One-photo-one-owner: strip incoming URLs from every OTHER map entry
   // AND from every OTHER template photo field's legacy mirror. Since the
   // remarks-photo owner id is NOT in the template (synthetic key), Pass 2
   // of stealOneOwner naturally skips it — no self-mirror write happens.
-  stealOneOwner(currentMap, next, templatePhotoFieldIds, fieldId, unique);
+  stealOneOwner(
+    currentMap,
+    existing,
+    patch,
+    templatePhotoFieldIds,
+    fieldId,
+    unique,
+  );
 
   if (unique.length > 0) {
     currentMap[fieldId] = unique;
@@ -555,17 +586,14 @@ export async function assignRemarksFieldPhotos(
     delete currentMap[fieldId];
   }
 
-  next[RESERVED_PHOTO_MAP_KEY] = currentMap;
-  // NO mirror write. Remarks-photo is map-only — writing next[fieldId]
+  patch[RESERVED_PHOTO_MAP_KEY] = currentMap;
+  // NO mirror write. Remarks-photo is map-only — writing patch[fieldId]
   // would collide with nothing today but would create a synthetic
   // non-`__` key that autosave could clobber.
-  next[REVIEWED_FLAG] = true;
+  patch[REVIEWED_FLAG] = true;
 
-  const updated = await db.job.updateMany({
-    where: { id: jobId, status: "DRAFT" },
-    data: { formData: next as unknown as object },
-  });
-  if (updated.count === 0) {
+  const affected = await mergeDraftFormDataPatch(jobId, patch);
+  if (affected === 0) {
     return { success: false, error: "Job is no longer editable" };
   }
 

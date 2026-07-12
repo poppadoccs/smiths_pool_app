@@ -6,6 +6,7 @@ vi.mock("@/lib/db", () => ({
       findUnique: vi.fn(),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
+    $executeRaw: vi.fn().mockResolvedValue(1),
   },
 }));
 
@@ -47,13 +48,17 @@ function textareaField(id: string) {
   return { id, type: "textarea", label: id, required: false, order: 0 };
 }
 
+// The actions now write an atomic jsonb-merge PATCH via db.$executeRaw
+// (ultrareview bug_006) — a tagged template whose interpolated values are
+// [patchJson, jobId]. This returns the parsed patch: exactly the keys the
+// action wrote. Keys ABSENT from the patch are untouched in the DB by
+// construction (jsonb || merge), so "preservation" assertions check for
+// absence rather than passthrough.
 function writtenFormData(): Record<string, unknown> {
-  const calls = vi.mocked(db.job.updateMany).mock.calls;
+  const calls = vi.mocked(db.$executeRaw).mock.calls;
   expect(calls.length).toBeGreaterThan(0);
-  const arg = calls[calls.length - 1]![0] as {
-    data: { formData: Record<string, unknown> };
-  };
-  return arg.data.formData;
+  const patchJson = calls[calls.length - 1]![1] as string;
+  return JSON.parse(patchJson) as Record<string, unknown>;
 }
 
 function photoMeta(url: string) {
@@ -62,7 +67,7 @@ function photoMeta(url: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(db.job.updateMany).mockResolvedValue({ count: 1 } as never);
+  vi.mocked(db.$executeRaw).mockResolvedValue(1 as never);
 });
 
 describe("assignMultiFieldPhotos", () => {
@@ -90,7 +95,7 @@ describe("assignMultiFieldPhotos", () => {
     // offset, so a drift between code and MULTI_PHOTO_CAPS would slip past.
     for (const [fieldId, cap] of Object.entries(MULTI_PHOTO_CAPS)) {
       vi.clearAllMocks();
-      vi.mocked(db.job.updateMany).mockResolvedValue({ count: 1 } as never);
+      vi.mocked(db.$executeRaw).mockResolvedValue(1 as never);
 
       const urls = Array.from({ length: cap }, (_, i) => `u-${fieldId}-${i}`);
       vi.mocked(db.job.findUnique).mockResolvedValue({
@@ -116,7 +121,7 @@ describe("assignMultiFieldPhotos", () => {
     expect(res.error).toMatch(/not a multi-photo target/i);
     // Early-reject: must not even read the DB.
     expect(db.job.findUnique).not.toHaveBeenCalled();
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects an over-cap assignment without truncation", async () => {
@@ -124,7 +129,7 @@ describe("assignMultiFieldPhotos", () => {
     const res = await assignMultiFieldPhotos("job-1", Q5, tooMany);
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/too many photos/i);
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects a URL not present in job.photos", async () => {
@@ -138,7 +143,7 @@ describe("assignMultiFieldPhotos", () => {
     const res = await assignMultiFieldPhotos("job-1", Q5, ["u1", "stranger"]);
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/unknown photo/i);
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects a non-DRAFT job", async () => {
@@ -152,7 +157,7 @@ describe("assignMultiFieldPhotos", () => {
     const res = await assignMultiFieldPhotos("job-1", Q5, ["u1"]);
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/only draft/i);
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects when updateMany returns count 0 (draft-flip between read and write)", async () => {
@@ -162,7 +167,7 @@ describe("assignMultiFieldPhotos", () => {
       formData: null,
       photos: [photoMeta("u1")],
     } as never);
-    vi.mocked(db.job.updateMany).mockResolvedValueOnce({ count: 0 } as never);
+    vi.mocked(db.$executeRaw).mockResolvedValueOnce(0 as never);
 
     const res = await assignMultiFieldPhotos("job-1", Q5, ["u1"]);
     expect(res.success).toBe(false);
@@ -170,13 +175,14 @@ describe("assignMultiFieldPhotos", () => {
 
     // Prove the guarded write path was actually attempted — not short-circuited
     // before the DB. A SUT that returned "no longer editable" without issuing
-    // the DRAFT-guarded updateMany would silently pass the bare error check
+    // the DRAFT-guarded merge would silently pass the bare error check
     // above; this assertion forces the race-guard to be exercised.
-    expect(db.job.updateMany).toHaveBeenCalledTimes(1);
-    const updateArg = vi.mocked(db.job.updateMany).mock.calls[0]![0] as {
-      where: { id: string; status: string };
-    };
-    expect(updateArg.where).toEqual({ id: "job-1", status: "DRAFT" });
+    expect(db.$executeRaw).toHaveBeenCalledTimes(1);
+    const rawCall = vi.mocked(db.$executeRaw).mock.calls[0]!;
+    expect((rawCall[0] as unknown as string[]).join("")).toContain(
+      "status::text = 'DRAFT'",
+    );
+    expect(rawCall[2]).toBe("job-1");
   });
 
   it("deduplicates URLs while preserving first-occurrence order", async () => {
@@ -239,8 +245,9 @@ describe("assignMultiFieldPhotos", () => {
 
     const saved = writtenFormData();
     expect(saved[REVIEWED_FLAG]).toBe(true);
-    // Unrelated formData survives the write.
-    expect(saved.unrelated).toBe("keep");
+    // Unrelated formData survives BY OMISSION: the jsonb-merge patch must
+    // not contain keys the action doesn't own (ultrareview bug_006).
+    expect(saved).not.toHaveProperty("unrelated");
   });
 });
 
@@ -295,7 +302,7 @@ describe("assignAdditionalPhotos (Q108)", () => {
     expect(res.error).toMatch(/too many photos/i);
     // Over-cap must reject before any DB touch.
     expect(db.job.findUnique).not.toHaveBeenCalled();
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects a URL not present in job.photos", async () => {
@@ -309,7 +316,7 @@ describe("assignAdditionalPhotos (Q108)", () => {
     const res = await assignAdditionalPhotos("job-1", ["u1", "stranger"]);
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/unknown photo/i);
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects a non-DRAFT job", async () => {
@@ -323,7 +330,7 @@ describe("assignAdditionalPhotos (Q108)", () => {
     const res = await assignAdditionalPhotos("job-1", ["u1"]);
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/only draft/i);
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects when updateMany returns count 0 and proves the guarded write was attempted", async () => {
@@ -333,17 +340,18 @@ describe("assignAdditionalPhotos (Q108)", () => {
       formData: null,
       photos: [photoMeta("u1")],
     } as never);
-    vi.mocked(db.job.updateMany).mockResolvedValueOnce({ count: 0 } as never);
+    vi.mocked(db.$executeRaw).mockResolvedValueOnce(0 as never);
 
     const res = await assignAdditionalPhotos("job-1", ["u1"]);
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/no longer editable/i);
 
-    expect(db.job.updateMany).toHaveBeenCalledTimes(1);
-    const updateArg = vi.mocked(db.job.updateMany).mock.calls[0]![0] as {
-      where: { id: string; status: string };
-    };
-    expect(updateArg.where).toEqual({ id: "job-1", status: "DRAFT" });
+    expect(db.$executeRaw).toHaveBeenCalledTimes(1);
+    const rawCall = vi.mocked(db.$executeRaw).mock.calls[0]!;
+    expect((rawCall[0] as unknown as string[]).join("")).toContain(
+      "status::text = 'DRAFT'",
+    );
+    expect(rawCall[2]).toBe("job-1");
   });
 
   it("deduplicates URLs while preserving first-occurrence order", async () => {
@@ -410,7 +418,8 @@ describe("assignAdditionalPhotos (Q108)", () => {
 
     const saved = writtenFormData();
     expect(saved[REVIEWED_FLAG]).toBe(true);
-    expect(saved.customer_name).toBe("Alex");
+    // Preserved by omission: the merge patch never carries foreign keys.
+    expect(saved).not.toHaveProperty("customer_name");
   });
 });
 
@@ -484,10 +493,11 @@ describe("one-photo-one-owner enforcement", () => {
     // Q5 lost its only URL — entry deleted, mirror cleared.
     expect(map).not.toHaveProperty(Q5);
     expect(saved[Q5]).toBe("");
-    // Q16 was never involved in the move — its map entry AND its mirror
-    // must remain exactly as they were.
+    // Q16 was never involved in the move — its map entry rides along in
+    // the (whole-map) patch unchanged, and its mirror is preserved by
+    // OMISSION from the patch (jsonb merge leaves absent keys untouched).
     expect(map[Q16]).toEqual(["a", "b"]);
-    expect(saved[Q16]).toBe("a");
+    expect(saved).not.toHaveProperty(Q16);
     // Q108 new owner.
     expect(map[Q108]).toEqual(["shared"]);
   });
@@ -680,7 +690,7 @@ describe("savePhotoAssignments map-awareness", () => {
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/map-backed/i);
     // No write should happen at all.
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects an assignment that targets Q108 as a mirror target (Q108 is map-backed)", async () => {
@@ -729,10 +739,10 @@ describe("savePhotoAssignments map-awareness", () => {
     expect(res).toEqual({ success: true });
 
     const saved = writtenFormData();
-    // Q5 map and mirror BOTH preserved — savePhotoAssignments left
-    // map-backed alone.
-    expect(saved[Q5]).toBe("x");
-    expect(saved[RESERVED_PHOTO_MAP_KEY]).toEqual({ [Q5]: ["x", "y"] });
+    // Q5 map and mirror BOTH preserved — savePhotoAssignments is
+    // legacy-only, so neither appears in its merge patch at all.
+    expect(saved).not.toHaveProperty(Q5);
+    expect(saved).not.toHaveProperty(RESERVED_PHOTO_MAP_KEY);
     // Legacy single-slot field cleared (empty assignments → "").
     expect(saved[LEGACY_SINGLE]).toBe("");
   });
@@ -771,7 +781,7 @@ describe("savePhotoAssignments map-awareness", () => {
     const res = await savePhotoAssignments("job-1", { r1: REMARKS_Q15 });
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/unknown assignment target/i);
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects a remarks-photo owner target (map-backed via REMARKS_PHOTO_FIELD_IDS)", async () => {
@@ -792,7 +802,7 @@ describe("savePhotoAssignments map-awareness", () => {
     });
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/map-backed/i);
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   // --- Source-ownership rejection (HIGH fix for the duplicate-owner hole) ---
@@ -821,7 +831,7 @@ describe("savePhotoAssignments map-awareness", () => {
     // Atomic rejection — no DB write, no mutation. map[Q5] is untouched
     // (in-memory mock state is not visible to the caller, but we assert
     // by construction: updateMany was never called).
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects a map-backed source URL (Q108) reassigned to a legacy target", async () => {
@@ -838,7 +848,7 @@ describe("savePhotoAssignments map-awareness", () => {
     const res = await savePhotoAssignments("job-1", { u: LEGACY_SINGLE });
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/map-owned/i);
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects atomically when a mixed batch contains one legal and one map-owned URL", async () => {
@@ -869,7 +879,7 @@ describe("savePhotoAssignments map-awareness", () => {
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/map-owned/i);
     // Atomic: no write at all, not even for the legal half of the batch.
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 });
 
@@ -896,9 +906,9 @@ describe("assignRemarksFieldPhotos", () => {
     expect(map[REMARKS_Q15_PHOTOS]).toEqual(["u1", "u2", "u3"]);
     // No legacy mirror at the synthetic owner key.
     expect(saved).not.toHaveProperty(REMARKS_Q15_PHOTOS);
-    // Textarea note text is NEVER touched by a photo action — the note
-    // content survives unchanged alongside the photo map entry.
-    expect(saved[REMARKS_Q15]).toBe("existing note text");
+    // Textarea note text is NEVER touched by a photo action — under the
+    // jsonb-merge patch that means it must be ABSENT from the write.
+    expect(saved).not.toHaveProperty(REMARKS_Q15);
     expect(saved[REVIEWED_FLAG]).toBe(true);
   });
 
@@ -991,7 +1001,7 @@ describe("assignRemarksFieldPhotos", () => {
     expect(res.error).toMatch(/too many photos/i);
     // Over-cap must reject before any DB touch.
     expect(db.job.findUnique).not.toHaveBeenCalled();
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("accepts a payload exactly at cap for every remarks-photo owner", async () => {
@@ -1010,7 +1020,7 @@ describe("assignRemarksFieldPhotos", () => {
     ];
     for (const owner of OWNERS) {
       vi.clearAllMocks();
-      vi.mocked(db.job.updateMany).mockResolvedValue({ count: 1 } as never);
+      vi.mocked(db.$executeRaw).mockResolvedValue(1 as never);
 
       const urls = Array.from(
         { length: REMARKS_PHOTO_CAP },
@@ -1040,7 +1050,7 @@ describe("assignRemarksFieldPhotos", () => {
     expect(res.error).toMatch(/not a remarks-photo owner/i);
     // Early reject — must not read the DB.
     expect(db.job.findUnique).not.toHaveBeenCalled();
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects an arbitrary (non-remarks-photo) field id", async () => {
@@ -1048,7 +1058,7 @@ describe("assignRemarksFieldPhotos", () => {
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/not a remarks-photo owner/i);
     expect(db.job.findUnique).not.toHaveBeenCalled();
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects a URL not present in job.photos", async () => {
@@ -1066,7 +1076,7 @@ describe("assignRemarksFieldPhotos", () => {
     ]);
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/unknown photo/i);
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects a non-DRAFT job", async () => {
@@ -1083,7 +1093,7 @@ describe("assignRemarksFieldPhotos", () => {
     ]);
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/only draft/i);
-    expect(db.job.updateMany).not.toHaveBeenCalled();
+    expect(db.$executeRaw).not.toHaveBeenCalled();
   });
 
   it("rejects when updateMany returns count 0 (draft-flip between read and write)", async () => {
@@ -1094,18 +1104,19 @@ describe("assignRemarksFieldPhotos", () => {
       photos: [photoMeta("u1")],
       template: { fields: [] },
     } as never);
-    vi.mocked(db.job.updateMany).mockResolvedValueOnce({ count: 0 } as never);
+    vi.mocked(db.$executeRaw).mockResolvedValueOnce(0 as never);
 
     const res = await assignRemarksFieldPhotos("job-1", REMARKS_Q15_PHOTOS, [
       "u1",
     ]);
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/no longer editable/i);
-    expect(db.job.updateMany).toHaveBeenCalledTimes(1);
-    const arg = vi.mocked(db.job.updateMany).mock.calls[0]![0] as {
-      where: { id: string; status: string };
-    };
-    expect(arg.where).toEqual({ id: "job-1", status: "DRAFT" });
+    expect(db.$executeRaw).toHaveBeenCalledTimes(1);
+    const rawCall = vi.mocked(db.$executeRaw).mock.calls[0]!;
+    expect((rawCall[0] as unknown as string[]).join("")).toContain(
+      "status::text = 'DRAFT'",
+    );
+    expect(rawCall[2]).toBe("job-1");
   });
 
   it("empty urls deletes the owner entry while preserving sibling owners", async () => {

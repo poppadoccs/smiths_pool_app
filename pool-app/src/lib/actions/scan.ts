@@ -261,10 +261,13 @@ function dropFooterWatermarks(fields: RawField[]): RawField[] {
   const PHONE_LABEL_RE = /^(?:phone|ph|tel|fax)\s*[:.]?\s*/i;
 
   // Standalone license/cert line: "License CPC1459862" — but NOT a question
-  // like "Contractor License #" that asks for user input.
-  // Must be: the word "license/cert" + an alphanumeric code, no question words.
+  // like "Contractor License #" or "License Number" that asks for user input.
+  // Must be: the word "license/cert" + an alphanumeric CODE. The code must
+  // contain at least one digit — under /i, a bare [A-Z0-9]{4,} matches plain
+  // English words ("Number", "Type"), silently deleting real question labels
+  // (ultrareview merged_bug_011).
   const LICENSE_STANDALONE_RE =
-    /^(?:licen[sc]e|cert(?:ification)?)\s+[A-Z0-9]{4,}/i;
+    /^(?:licen[sc]e|cert(?:ification)?)\s+[A-Z0-9]*\d[A-Z0-9]*/i;
 
   return fields.filter((f) => {
     const label = f.label.trim();
@@ -919,8 +922,11 @@ function extractHelperText(fields: RawField[]): RawField[] {
     let placeholder = f.placeholder;
 
     // Pattern 1: "(e.g., ...)", "(ex: ...)", "(example: ...)", "(note: ...)"
+    // \b after the alternation keeps "ex" from matching inside longer words —
+    // without it, "(exact measurement)" became placeholder "act measurement"
+    // (ultrareview merged_bug_011).
     const hintMatch = label.match(
-      /\s*\((?:e\.?g\.?|ex|example|hint|note)[:\s,.]*([^)]+)\)\s*$/i,
+      /\s*\((?:e\.?g\.?|ex|example|hint|note)\b[:\s,.]*([^)]+)\)\s*$/i,
     );
     if (hintMatch && !placeholder) {
       label = label.slice(0, hintMatch.index).trim();

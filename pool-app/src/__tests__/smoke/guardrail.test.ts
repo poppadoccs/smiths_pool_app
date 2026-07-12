@@ -254,7 +254,7 @@ describe("smoke: resend flow (mocked)", () => {
     expect(res.success).toBe(true);
     expect(res.emailSent).toBe(true);
     expect(db.job.updateMany).toHaveBeenCalledWith({
-      where: { id: COPY_ID, status: { not: "SUBMITTED" } },
+      where: { id: COPY_ID, status: "DRAFT" },
       data: expect.objectContaining({
         status: "SUBMITTED",
         submittedBy: "tester",
@@ -317,7 +317,7 @@ describe("smoke: resend flow (mocked)", () => {
     // DB flip must still land — the job must persist as SUBMITTED even when
     // the subsequent email send fails. This is the core SUBM-07 invariant.
     expect(db.job.updateMany).toHaveBeenCalledWith({
-      where: { id: COPY_ID, status: { not: "SUBMITTED" } },
+      where: { id: COPY_ID, status: "DRAFT" },
       data: expect.objectContaining({
         status: "SUBMITTED",
         submittedBy: "tester",
@@ -337,7 +337,7 @@ describe("smoke: resend flow (mocked)", () => {
     expect(res.success).toBe(true);
     expect(res.emailSent).toBe(false);
     expect(db.job.updateMany).toHaveBeenCalledWith({
-      where: { id: COPY_ID, status: { not: "SUBMITTED" } },
+      where: { id: COPY_ID, status: "DRAFT" },
       data: expect.objectContaining({
         status: "SUBMITTED",
         submittedBy: "tester",

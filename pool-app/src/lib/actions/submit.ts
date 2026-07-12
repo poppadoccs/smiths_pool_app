@@ -62,6 +62,15 @@ export async function submitJob(
   if (job.status === "SUBMITTED") {
     return { success: false, error: "This job has already been submitted" };
   }
+  // ARCHIVED is terminal (ultrareview bug_010) — archiveJob/reopenJob both
+  // pin their source states, and the state machine has no ARCHIVED→SUBMITTED
+  // edge. A stale tab or replayed action must not resurrect a closed job.
+  if (job.status !== "DRAFT") {
+    return {
+      success: false,
+      error: "This job is archived and cannot be submitted",
+    };
+  }
 
   // 3. Validate form data exists
   const formData = job.formData as FormData | null;
@@ -135,7 +144,7 @@ export async function submitJob(
   // network throw, or even the clear-write itself — the flag stays true so
   // the submitted-job page warns durably instead of falsely claiming success.
   const updated = await db.job.updateMany({
-    where: { id: jobId, status: { not: "SUBMITTED" } },
+    where: { id: jobId, status: "DRAFT" },
     data: {
       status: "SUBMITTED",
       submittedBy,
