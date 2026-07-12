@@ -17,12 +17,16 @@ export async function savePhotoMetadata(
     },
   ]);
 
+  // DRAFT-only, atomic with the write (ultrareview bug_001): the upload
+  // pipeline (compress → blob upload → this action) spans seconds, so a
+  // submit can land mid-flight; without the status filter the photo would
+  // append to a SUBMITTED job the office already received.
   const affected = await db.$executeRaw`
     UPDATE jobs
     SET photos = COALESCE(photos, '[]'::jsonb) || ${newPhoto}::jsonb
-    WHERE id = ${jobId}
+    WHERE id = ${jobId} AND status::text = 'DRAFT'
   `;
-  if (affected === 0) throw new Error("Job not found");
+  if (affected === 0) throw new Error("Job not found or no longer editable");
 
   revalidatePath(`/jobs/${jobId}`);
 }

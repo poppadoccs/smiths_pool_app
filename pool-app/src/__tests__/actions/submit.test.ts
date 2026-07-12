@@ -82,12 +82,23 @@ describe("submitJob", () => {
 
     expect(result.success).toBe(true);
     expect(db.job.updateMany).toHaveBeenCalledWith({
-      where: { id: "job-1", status: { not: "SUBMITTED" } },
+      where: { id: "job-1", status: "DRAFT" },
       data: expect.objectContaining({
         status: "SUBMITTED",
         submittedBy: "Mike",
       }),
     });
+  });
+
+  it("rejects an ARCHIVED job (terminal state — ultrareview bug_010)", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue(
+      mockJob({ status: "ARCHIVED" }) as never,
+    );
+
+    const result = await submitJob("job-1", "Mike");
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/archived/i);
+    expect(db.job.updateMany).not.toHaveBeenCalled();
   });
 
   it("returns error when job not found", async () => {
