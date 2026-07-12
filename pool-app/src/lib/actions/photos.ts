@@ -3,7 +3,7 @@
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import { del } from "@vercel/blob";
-import { isEditableCopy } from "@/lib/multi-photo";
+import { buildPhotoRemovalPatch, isEditableCopy } from "@/lib/multi-photo";
 export async function savePhotoMetadata(
   jobId: string,
   photo: { url: string; filename: string; size: number },
@@ -88,7 +88,11 @@ export async function deletePhoto(jobId: string, photoUrl: string) {
   // these specific invariants.
   const job = await db.job.findUnique({
     where: { id: jobId },
-    select: { status: true, formData: true },
+    select: {
+      status: true,
+      formData: true,
+      template: { select: { fields: true } },
+    },
   });
   if (!job) throw new Error("Job not found");
   if (job.status === "SUBMITTED") {
@@ -113,6 +117,31 @@ export async function deletePhoto(jobId: string, photoUrl: string) {
     WHERE id = ${jobId}
   `;
   if (affected === 0) throw new Error("Job not found");
+
+  // Strip every formData reference to the deleted URL (ultrareview
+  // bug_002): assignment-map buckets, legacy field mirrors, and summary
+  // bullets. Without this the ghost URL re-enters the PDF via Pass 1's
+  // external-URL branch and prints "[photo could not be loaded]" forever.
+  // Written as a DRAFT-guarded jsonb merge of only the changed keys, so
+  // concurrent autosave text writes are untouched.
+  const photoFieldIds = Array.isArray(job.template?.fields)
+    ? (job.template.fields as { id: string; type: string }[])
+        .filter((f) => f.type === "photo")
+        .map((f) => f.id)
+    : [];
+  const patch = buildPhotoRemovalPatch(
+    job.formData as Record<string, unknown> | null,
+    photoUrl,
+    photoFieldIds,
+  );
+  if (patch) {
+    const patchJson = JSON.stringify(patch);
+    await db.$executeRaw`
+      UPDATE jobs
+      SET form_data = COALESCE(form_data, '{}'::jsonb) || ${patchJson}::jsonb
+      WHERE id = ${jobId} AND status::text = 'DRAFT'
+    `;
+  }
 
   revalidatePath(`/jobs/${jobId}`);
 }

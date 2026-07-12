@@ -141,3 +141,63 @@ export function readFieldPhotoUrls(
 
   return [];
 }
+
+// --- Photo deletion reference cleanup (ultrareview bug_002) ---
+// Pure builder for the formData patch that must accompany a photo
+// deletion. deletePhoto historically rewrote job.photos only, leaving
+// ghost URL references in three loci — the reserved assignment map,
+// legacy single-URL field mirrors, and summary-bullet photo lists —
+// which then rendered as "[photo could not be loaded]" in every PDF
+// and broken <img> tags in every office email, forever.
+// Returns ONLY the keys that change (jsonb-merge patch semantics), or
+// null when the URL is unreferenced and no write is needed.
+import { parseSummaryItems, RESERVED_SUMMARY_KEY } from "./summary";
+
+export function buildPhotoRemovalPatch(
+  formData: Record<string, unknown> | null | undefined,
+  url: string,
+  photoFieldIds: readonly string[],
+): Record<string, unknown> | null {
+  if (!formData) return null;
+  const patch: Record<string, unknown> = {};
+
+  // 1. Reserved assignment map — drop the URL from every owner bucket;
+  //    a bucket emptied by the removal is deleted outright.
+  const rawMap = formData[RESERVED_PHOTO_MAP_KEY];
+  if (rawMap && typeof rawMap === "object" && !Array.isArray(rawMap)) {
+    let mapChanged = false;
+    const nextMap: Record<string, unknown> = {};
+    for (const [fid, entry] of Object.entries(
+      rawMap as Record<string, unknown>,
+    )) {
+      if (!Array.isArray(entry)) {
+        nextMap[fid] = entry;
+        continue;
+      }
+      const filtered = entry.filter((u) => u !== url);
+      if (filtered.length !== entry.length) {
+        mapChanged = true;
+        if (filtered.length > 0) nextMap[fid] = filtered;
+      } else {
+        nextMap[fid] = entry;
+      }
+    }
+    if (mapChanged) patch[RESERVED_PHOTO_MAP_KEY] = nextMap;
+  }
+
+  // 2. Legacy single-URL mirrors on template photo fields.
+  for (const fid of photoFieldIds) {
+    if (formData[fid] === url) patch[fid] = "";
+  }
+
+  // 3. Summary bullets — strip the URL from every item's photo list.
+  const items = parseSummaryItems(formData);
+  if (items && items.some((it) => it.photos.includes(url))) {
+    patch[RESERVED_SUMMARY_KEY] = items.map((it) => ({
+      text: it.text,
+      photos: it.photos.filter((u) => u !== url),
+    }));
+  }
+
+  return Object.keys(patch).length > 0 ? patch : null;
+}
