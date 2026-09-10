@@ -1,9 +1,8 @@
-// Structured summary items — replaces the single-blob "107. Summary"
-// textarea on new-shape jobs. Legacy jobs whose formData["107_summary"]
-// holds a plain string still render identically; that path is selected
-// by parseSummaryItems returning null.
+// Structured summary items for Q107 and optional Q109. Both use the same
+// editor, validation and report layout, with independent reserved keys.
+// A legacy plain string still renders when parseSummaryItems returns null.
 //
-// Reserved-key convention: formData["__summary_items"] is owned by the
+// Reserved-key convention: each summary's reserved key is owned by the
 // dedicated saveSummaryItems server action (Task 8). RHF autosave must
 // never write this key. See plan 260417-mpf.
 
@@ -15,6 +14,26 @@ export const RESERVED_SUMMARY_KEY = "__summary_items";
 // text blob lives at formData[SUMMARY_FIELD_ID]; structured items live at
 // formData[RESERVED_SUMMARY_KEY].
 export const SUMMARY_FIELD_ID = "107_summary";
+export const REINSPECTION_FIELD_ID = "109_reinspection_summary";
+export const RESERVED_REINSPECTION_SUMMARY_KEY = "__reinspection_summary_items";
+export const SUMMARY_FIELD_IDS = [
+  SUMMARY_FIELD_ID,
+  REINSPECTION_FIELD_ID,
+] as const;
+export type SummaryFieldId = (typeof SUMMARY_FIELD_IDS)[number];
+
+export function isSummaryFieldId(fieldId: string): fieldId is SummaryFieldId {
+  return fieldId === SUMMARY_FIELD_ID || fieldId === REINSPECTION_FIELD_ID;
+}
+
+// Each editor owns just its own reserved key. Never accept an arbitrary
+// client-supplied JSON key in the summary writer.
+export function summaryKeyFor(fieldId: string): string | undefined {
+  if (fieldId === SUMMARY_FIELD_ID) return RESERVED_SUMMARY_KEY;
+  if (fieldId === REINSPECTION_FIELD_ID)
+    return RESERVED_REINSPECTION_SUMMARY_KEY;
+  return undefined;
+}
 
 // Hard cap on a single item's text — generous for field notes, small
 // enough to keep the PDF/email payload sane.
@@ -38,10 +57,12 @@ export const SUMMARY_PHOTO_SOFT_WARN = 24;
 // drops the whole array to null so a corrupt row never renders half.
 export function parseSummaryItems(
   formData: Record<string, unknown> | null | undefined,
+  fieldId: SummaryFieldId = SUMMARY_FIELD_ID,
 ): SummaryItem[] | null {
   if (!formData) return null;
 
-  const raw = formData[RESERVED_SUMMARY_KEY];
+  const key = summaryKeyFor(fieldId);
+  const raw = key ? formData[key] : undefined;
   if (!Array.isArray(raw)) return null;
 
   const out: SummaryItem[] = [];

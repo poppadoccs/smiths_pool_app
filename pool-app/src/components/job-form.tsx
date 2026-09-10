@@ -37,7 +37,7 @@ import {
   type FormData as JobFormData, // aliased to avoid collision with DOM FormData
 } from "@/lib/forms";
 import { SummaryItemsEditor } from "@/components/summary-items-editor";
-import { SUMMARY_FIELD_ID } from "@/lib/summary";
+import { isSummaryFieldId } from "@/lib/summary";
 import { saveFormData } from "@/lib/actions/forms";
 import { StickyFormNav } from "@/components/sticky-form-nav";
 import { ImportFromPaper } from "@/components/import-from-paper";
@@ -587,14 +587,15 @@ function FieldRenderer({
       );
 
     case "textarea":
-      // "107. Summary" gets the structured bullet-item editor (text +
-      // photos per bullet) instead of the plain textarea. Legacy blob text
+      // Q107 and Q109 share the bullet-item editor (text + photos per
+      // bullet) with independent storage. Legacy blob text
       // stays readable inside the editor and is never auto-deleted.
-      if (field.id === SUMMARY_FIELD_ID) {
+      if (isSummaryFieldId(field.id)) {
         return (
           <SummaryItemsEditor
             jobId={jobId}
             fieldLabel={field.label}
+            fieldId={field.id}
             jobPhotos={jobPhotos}
             formData={serverFormData}
             disabled={disabled}

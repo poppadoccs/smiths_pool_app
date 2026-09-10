@@ -151,7 +151,7 @@ export function readFieldPhotoUrls(
 // and broken <img> tags in every office email, forever.
 // Returns ONLY the keys that change (jsonb-merge patch semantics), or
 // null when the URL is unreferenced and no write is needed.
-import { parseSummaryItems, RESERVED_SUMMARY_KEY } from "./summary";
+import { parseSummaryItems, SUMMARY_FIELD_IDS, summaryKeyFor } from "./summary";
 
 export function buildPhotoRemovalPatch(
   formData: Record<string, unknown> | null | undefined,
@@ -191,12 +191,14 @@ export function buildPhotoRemovalPatch(
   }
 
   // 3. Summary bullets — strip the URL from every item's photo list.
-  const items = parseSummaryItems(formData);
-  if (items && items.some((it) => it.photos.includes(url))) {
-    patch[RESERVED_SUMMARY_KEY] = items.map((it) => ({
-      text: it.text,
-      photos: it.photos.filter((u) => u !== url),
-    }));
+  for (const fieldId of SUMMARY_FIELD_IDS) {
+    const items = parseSummaryItems(formData, fieldId);
+    if (items && items.some((it) => it.photos.includes(url))) {
+      patch[summaryKeyFor(fieldId)!] = items.map((it) => ({
+        text: it.text,
+        photos: it.photos.filter((u) => u !== url),
+      }));
+    }
   }
 
   return Object.keys(patch).length > 0 ? patch : null;

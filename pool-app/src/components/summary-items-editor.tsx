@@ -14,35 +14,39 @@ import {
   SUMMARY_PER_ITEM_CAP,
   SUMMARY_PHOTO_SOFT_WARN,
   SUMMARY_PHOTO_TOTAL_CAP,
+  SUMMARY_TEXT_MAX_LENGTH,
   type SummaryItem,
+  type SummaryFieldId,
 } from "@/lib/summary";
 import type { FormData as JobFormData } from "@/lib/forms";
 import type { PhotoMetadata } from "@/lib/photos";
 
-// Structured editor for "107. Summary" — a list of bullet points, each with
-// its own text and attached photos. Replaces the legacy free-text textarea.
+// Shared editor for Q107 Summary and optional Q109 Re-Inspection Summary:
+// identical bullet points, text, photo controls and capacity limits.
 //
-// Data ownership: items live at formData["__summary_items"], written ONLY
+// Data ownership: items live at the field's reserved summary key, written ONLY
 // through the dedicated saveSummaryItems action (autosave strips `__` keys,
 // so this state deliberately lives outside react-hook-form). The legacy
-// blob at formData["107_summary"] is never modified here: it renders
+// blob at formData[fieldId] is never modified here: it renders
 // read-only until the worker converts it into the first bullet item.
 export function SummaryItemsEditor({
   jobId,
   fieldLabel,
+  fieldId = SUMMARY_FIELD_ID,
   jobPhotos,
   formData,
   disabled = false,
 }: {
   jobId: string;
   fieldLabel: string;
+  fieldId?: SummaryFieldId;
   jobPhotos: PhotoMetadata[];
   formData: JobFormData | null;
   disabled?: boolean;
 }) {
   // null → legacy mode (blob or empty); array → structured mode.
   const [items, setItems] = useState<SummaryItem[] | null>(() =>
-    parseSummaryItems(formData),
+    parseSummaryItems(formData, fieldId),
   );
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">(
     "idle",
@@ -79,7 +83,7 @@ export function SummaryItemsEditor({
       if (!snapshot || snapshot === lastSavedRef.current) return;
       setSaveStatus("saving");
       try {
-        const res = await saveSummaryItems(jobId, snapshot);
+        const res = await saveSummaryItems(jobId, snapshot, fieldId);
         if (!res.success) {
           toast.error(res.error ?? "Failed to save summary");
           setSaveStatus("idle");
@@ -136,14 +140,14 @@ export function SummaryItemsEditor({
   }
 
   const legacyBlob =
-    formData && typeof formData[SUMMARY_FIELD_ID] === "string"
-      ? (formData[SUMMARY_FIELD_ID] as string).trim()
+    formData && typeof formData[fieldId] === "string"
+      ? (formData[fieldId] as string).trim()
       : "";
 
   // --- Legacy mode: no structured items yet ---
   if (items === null) {
     return (
-      <div className="space-y-2">
+      <div className="space-y-2" role="group" aria-label={fieldLabel}>
         <Label className="text-base">{fieldLabel}</Label>
         {legacyBlob ? (
           <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-base whitespace-pre-wrap text-zinc-700">
@@ -224,7 +228,12 @@ export function SummaryItemsEditor({
   }
 
   return (
-    <div className="space-y-3" data-testid="summary-items-editor">
+    <div
+      className="space-y-3"
+      data-testid="summary-items-editor"
+      role="group"
+      aria-label={fieldLabel}
+    >
       <div className="flex items-center justify-between">
         <Label className="text-base">{fieldLabel}</Label>
         <span className="flex min-h-[20px] items-center gap-1.5 text-sm">
@@ -272,6 +281,8 @@ export function SummaryItemsEditor({
                   •
                 </span>
                 <Textarea
+                  aria-label={`${fieldLabel} — bullet ${index + 1}`}
+                  maxLength={SUMMARY_TEXT_MAX_LENGTH}
                   value={item.text}
                   placeholder="Describe this point..."
                   className="min-h-[72px] bg-white text-base"

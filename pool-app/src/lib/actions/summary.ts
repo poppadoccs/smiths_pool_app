@@ -3,15 +3,19 @@
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import type { PhotoMetadata } from "@/lib/photos";
+import type { FormField } from "@/lib/forms";
 import {
-  RESERVED_SUMMARY_KEY,
+  SUMMARY_FIELD_ID,
+  REINSPECTION_FIELD_ID,
+  summaryKeyFor,
   SUMMARY_PER_ITEM_CAP,
   SUMMARY_PHOTO_TOTAL_CAP,
   SUMMARY_TEXT_MAX_LENGTH,
   type SummaryItem,
+  type SummaryFieldId,
 } from "@/lib/summary";
 
-// Dedicated writer for formData["__summary_items"] (reserved-key channel —
+// Dedicated writer for Q107 or Q109's reserved summary key (reserved-key channel —
 // see plan 260417-mpf §Reserved keys and src/lib/actions/forms.ts, which
 // strips every `__`-prefixed key from autosave payloads so ONLY this action
 // can write summary items).
@@ -25,7 +29,10 @@ import {
 export async function saveSummaryItems(
   jobId: string,
   items: SummaryItem[],
+  fieldId: SummaryFieldId = SUMMARY_FIELD_ID,
 ): Promise<{ success: boolean; error?: string }> {
+  const storageKey = summaryKeyFor(fieldId);
+  if (!storageKey) return { success: false, error: "Unknown summary field" };
   // --- Normalize + validate shape strictly (malformed input is a bug
   // signal, not something to coerce) ---
   if (!Array.isArray(items)) {
@@ -78,10 +85,25 @@ export async function saveSummaryItems(
     };
   }
 
-  const job = await db.job.findUnique({ where: { id: jobId } });
+  const job = await db.job.findUnique({
+    where: { id: jobId },
+    include: { template: true },
+  });
   if (!job) return { success: false, error: "Job not found" };
   if (job.status !== "DRAFT") {
     return { success: false, error: "Only draft jobs can edit the summary" };
+  }
+  if (
+    fieldId === REINSPECTION_FIELD_ID &&
+    (!Array.isArray(job.template?.fields) ||
+      !(job.template.fields as FormField[]).some(
+        (field) => field.id === fieldId && field.type === "textarea",
+      ))
+  ) {
+    return {
+      success: false,
+      error: "This template does not include Re-Inspection Summary yet.",
+    };
   }
 
   // Ownership: every referenced photo must already exist on the job.
@@ -102,11 +124,11 @@ export async function saveSummaryItems(
   if (normalized.length === 0) {
     affected = await db.$executeRaw`
       UPDATE jobs
-      SET form_data = COALESCE(form_data, '{}'::jsonb) - ${RESERVED_SUMMARY_KEY}::text
+      SET form_data = COALESCE(form_data, '{}'::jsonb) - ${storageKey}::text
       WHERE id = ${jobId} AND status::text = 'DRAFT'
     `;
   } else {
-    const patchJson = JSON.stringify({ [RESERVED_SUMMARY_KEY]: normalized });
+    const patchJson = JSON.stringify({ [storageKey]: normalized });
     affected = await db.$executeRaw`
       UPDATE jobs
       SET form_data = COALESCE(form_data, '{}'::jsonb) || ${patchJson}::jsonb

@@ -22,9 +22,14 @@ import {
 import {
   collectSummaryPhotoUrls,
   parseSummaryItems,
-  SUMMARY_FIELD_ID,
+  isSummaryFieldId,
+  type SummaryItem,
 } from "@/lib/summary";
 import { readFileSync } from "fs";
+import {
+  hasReinspectionContent,
+  REINSPECTION_FIELD_ID,
+} from "@/lib/reinspection";
 import { join } from "path";
 
 const COMPANY_NAME = "Poolsmith's Renovations LLC";
@@ -233,6 +238,22 @@ export async function generateJobPdf(
     }
   }
 
+  // Reserve both summary sections' photos before the legacy fallback can
+  // guess them into an unrelated empty photo question. Explicit question
+  // bindings above retain their existing behavior.
+  const summaryItemsByField = new Map<string, SummaryItem[] | null>();
+  for (const field of template.fields) {
+    if (isSummaryFieldId(field.id)) {
+      summaryItemsByField.set(field.id, parseSummaryItems(formData, field.id));
+    }
+  }
+  for (const items of summaryItemsByField.values()) {
+    for (const url of collectSummaryPhotoUrls(items ?? [])) {
+      const idx = allJobPhotosArr.findIndex((p) => p.url === url);
+      if (idx >= 0) consumedPhotoIdxs.add(idx);
+    }
+  }
+
   // Pass 2 gate — only runs for untouched legacy jobs.
   //   `reviewed`:                  admin has opened the assignment tool and
   //                                saved. Sentinel pins explicit intent;
@@ -292,22 +313,6 @@ export async function generateJobPdf(
     }
   }
 
-  // Pass 2.6 — Summary-item consumption. Photos attached to structured
-  // summary bullets (formData["__summary_items"]) render inline under the
-  // "107. Summary" block below; consume them here so they never drain
-  // under Q108 as leftovers. Like remarks photos, this is consumption
-  // only — the render itself happens at the summary field branch and is
-  // independently gated by excludedUrlSet.
-  const summaryItems = parseSummaryItems(formData);
-  if (summaryItems) {
-    for (const url of collectSummaryPhotoUrls(summaryItems)) {
-      const idx = allJobPhotosArr.findIndex(
-        (p, i) => !consumedPhotoIdxs.has(i) && p.url === url,
-      );
-      if (idx >= 0) consumedPhotoIdxs.add(idx);
-    }
-  }
-
   // Pass 3 queue — every photo not claimed by a non-Q108 field drains
   // under Q108 "Additional Photos" (or the safety drain if Q108 is absent).
   // Excluded photos are filtered out so they never reach Q108 or the
@@ -320,6 +325,18 @@ export async function generateJobPdf(
     .map((p) => p.url);
 
   for (const field of template.fields) {
+    const summaryItems = summaryItemsByField.get(field.id) ?? null;
+    if (
+      field.id === REINSPECTION_FIELD_ID &&
+      !hasReinspectionContent(
+        formData,
+        collectSummaryPhotoUrls(summaryItems ?? []).filter(
+          (url) => !excludedUrlSet.has(url),
+        ),
+      )
+    ) {
+      continue;
+    }
     // Section header
     if (field.section && field.section !== currentSection) {
       currentSection = field.section;
@@ -491,7 +508,7 @@ export async function generateJobPdf(
     // Only when __summary_items exists (parseSummaryItems non-null);
     // legacy jobs whose 107_summary holds a plain string fall through to
     // the generic label/value row below, unchanged.
-    if (field.id === SUMMARY_FIELD_ID && summaryItems !== null) {
+    if (summaryItems !== null) {
       // Heading — full-width bold label, like a section
       doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
@@ -518,13 +535,25 @@ export async function generateJobPdf(
         const text = item.text.trim() || "(no notes)";
         const itemLines = doc.splitTextToSize(text, CONTENT_WIDTH - 8);
         const itemH = itemLines.length * 4 + 2;
-        if (y + itemH > 280) {
+        if (itemH <= 280 - MARGIN && y + itemH > 280) {
           doc.addPage();
           y = MARGIN;
         }
-        doc.text("•", MARGIN + 2, y);
-        doc.text(itemLines, MARGIN + 7, y);
-        y += itemH;
+        // Both summary sections share pagination, including a single
+        // long bullet whose text needs more than one page.
+        let offset = 0;
+        while (offset < itemLines.length) {
+          if (y + 6 > 280) {
+            doc.addPage();
+            y = MARGIN;
+          }
+          const availableLines = Math.floor((280 - y - 2) / 4);
+          const chunk = itemLines.slice(offset, offset + availableLines);
+          if (offset === 0) doc.text("•", MARGIN + 2, y);
+          doc.text(chunk, MARGIN + 7, y);
+          y += chunk.length * 4 + 2;
+          offset += chunk.length;
+        }
 
         // Photos under the bullet — same fetch/fit/center pipeline as
         // every other photo, honoring per-photo PDF exclusion.
@@ -617,10 +646,8 @@ export async function generateJobPdf(
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
     doc.text(labelLines, MARGIN, y);
-
     doc.setFont("helvetica", "normal");
     doc.text(valueLines, MARGIN + labelWidth + 5, y);
-
     y += blockHeight;
 
     // Remarks-photo attachments: for a remarks textarea field, render the

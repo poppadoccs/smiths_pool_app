@@ -5,7 +5,10 @@ import {
   buildPhotoRemovalPatch,
   RESERVED_PHOTO_MAP_KEY,
 } from "@/lib/multi-photo";
-import { RESERVED_SUMMARY_KEY } from "@/lib/summary";
+import {
+  RESERVED_SUMMARY_KEY,
+  RESERVED_REINSPECTION_SUMMARY_KEY,
+} from "@/lib/summary";
 
 const Q5 = "5_picture_of_pool_and_spa_if_applicable";
 const Q16 = "16_photo_of_pool_pump";
@@ -77,5 +80,25 @@ describe("buildPhotoRemovalPatch", () => {
     expect(Object.keys(patch).sort()).toEqual(
       [RESERVED_PHOTO_MAP_KEY, Q5, RESERVED_SUMMARY_KEY].sort(),
     );
+  });
+  it("removes a deleted photo from both summaries while preserving each section's text and other photos", () => {
+    const patch = buildPhotoRemovalPatch(
+      {
+        [RESERVED_SUMMARY_KEY]: [
+          { text: "Original", photos: ["gone", "original-kept"] },
+        ],
+        [RESERVED_REINSPECTION_SUMMARY_KEY]: [
+          { text: "Reinspection", photos: ["reinspection-kept", "gone"] },
+        ],
+      },
+      "gone",
+      [],
+    )!;
+    expect(patch).toEqual({
+      [RESERVED_SUMMARY_KEY]: [{ text: "Original", photos: ["original-kept"] }],
+      [RESERVED_REINSPECTION_SUMMARY_KEY]: [
+        { text: "Reinspection", photos: ["reinspection-kept"] },
+      ],
+    });
   });
 });

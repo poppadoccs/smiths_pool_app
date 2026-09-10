@@ -140,6 +140,7 @@ export type FormTemplate = {
 // Reserved keys (all __-prefixed):
 //   __photoAssignmentsByField  — Record<string, string[]>  (src/lib/multi-photo.ts)
 //   __summary_items            — SummaryItem[]             (src/lib/summary.ts)
+//   __reinspection_summary_items — SummaryItem[]            (src/lib/summary.ts)
 //   __photoAssignmentsReviewed — boolean                   (src/lib/actions/photo-assignments.ts)
 //
 // Template-field values at runtime are still `string | boolean` per the
