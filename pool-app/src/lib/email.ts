@@ -8,7 +8,15 @@ import {
   type FormData,
 } from "@/lib/forms";
 import type { PhotoMetadata } from "@/lib/photos";
-import { parseSummaryItems, SUMMARY_FIELD_ID } from "@/lib/summary";
+import {
+  collectSummaryPhotoUrls,
+  isSummaryFieldId,
+  parseSummaryItems,
+} from "@/lib/summary";
+import {
+  hasReinspectionContent,
+  REINSPECTION_FIELD_ID,
+} from "@/lib/reinspection";
 
 type SubmissionEmailProps = {
   jobTitle: string;
@@ -38,10 +46,32 @@ export function buildSubmissionEmail({
   editUrl,
   pdfOmittedTooLarge = false,
 }: SubmissionEmailProps): string {
-  const summaryItems = parseSummaryItems(formData);
+  const includedUrlSet = new Set(
+    photos
+      .filter((photo) => photo.includedInPdf !== false)
+      .map((photo) => photo.url),
+  );
+  const inlineSummaryPhotoUrls = new Set(
+    template.fields.flatMap((field) =>
+      isSummaryFieldId(field.id)
+        ? collectSummaryPhotoUrls(
+            parseSummaryItems(formData, field.id) ?? [],
+          ).filter((url) => includedUrlSet.has(url))
+        : [],
+    ),
+  );
 
   const formRows = template.fields
     .map((field) => {
+      const summaryItems = isSummaryFieldId(field.id)
+        ? parseSummaryItems(formData, field.id)
+        : null;
+      if (
+        field.id === REINSPECTION_FIELD_ID &&
+        !hasReinspectionContent(formData, [...includedUrlSet])
+      ) {
+        return "";
+      }
       // Paired fields (X + X_secondary) fold into ONE row on the base
       // field: shared title, one line per column. Mirrors the PDF.
       if (isSecondaryField(field, template.fields)) return "";
@@ -66,7 +96,7 @@ export function buildSubmissionEmail({
         };
         rowLabel = splitPairedLabel(field.label).title;
         displayValue = `${columnLine(field)}<br />${columnLine(pairedSecondary)}`;
-      } else if (field.id === SUMMARY_FIELD_ID && summaryItems !== null) {
+      } else if (summaryItems !== null) {
         // Structured summary — bulleted items, each with its attached
         // photo thumbnails. Mirrors the PDF's summary block.
         displayValue =
@@ -75,9 +105,10 @@ export function buildSubmissionEmail({
             : `<ul style="margin: 0; padding-left: 18px;">${summaryItems
                 .map((item) => {
                   const text = item.text.trim()
-                    ? escapeHtml(item.text.trim())
+                    ? escapeHtml(item.text.trim()).replace(/\r?\n/g, "<br />")
                     : '<span style="color: #999;">(no notes)</span>';
                   const thumbs = item.photos
+                    .filter((url) => includedUrlSet.has(url))
                     .map(
                       (url) => `
                         <a href="${escapeHtml(url)}" target="_blank" style="text-decoration: none;">
@@ -130,7 +161,9 @@ export function buildSubmissionEmail({
   // photos are STILL delivered in the email body as a separate "for
   // reference" section, so the office can see what was uploaded but
   // intentionally kept out of the PDF report.
-  const includedPhotos = photos.filter((p) => p.includedInPdf !== false);
+  const includedPhotos = photos.filter(
+    (p) => p.includedInPdf !== false && !inlineSummaryPhotoUrls.has(p.url),
+  );
   const excludedPhotos = photos.filter((p) => p.includedInPdf === false);
 
   function renderPhotoTile(photo: PhotoMetadata, i: number): string {

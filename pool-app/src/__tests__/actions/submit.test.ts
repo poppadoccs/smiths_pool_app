@@ -75,6 +75,29 @@ function mockJob(overrides = {}) {
 }
 
 describe("submitJob", () => {
+  it("allows an older draft to submit without the new optional Q109 value", async () => {
+    vi.mocked(db.job.findUnique).mockResolvedValue(
+      mockJob({
+        template: {
+          id: "q109-template",
+          name: "Pool/Spa Inspection",
+          fields: [
+            {
+              id: "109_reinspection_summary",
+              label: "109. Re-Inspection Summary",
+              type: "textarea",
+              required: false,
+              order: 108,
+            },
+          ],
+        },
+      }) as never,
+    );
+    const result = await submitJob("job-1", "Test");
+    expect(result.success).toBe(true);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
   it("sends email and updates job status to SUBMITTED", async () => {
     vi.mocked(db.job.findUnique).mockResolvedValue(mockJob() as never);
 

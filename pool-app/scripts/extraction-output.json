@@ -1276,6 +1276,13 @@
         "required": false,
         "section": "106. Autofill:",
         "order": 107
+      },
+      {
+        "id": "109_reinspection_summary",
+        "label": "109. Re-Inspection Summary",
+        "type": "textarea",
+        "required": false,
+        "order": 108
       }
     ]
   }
