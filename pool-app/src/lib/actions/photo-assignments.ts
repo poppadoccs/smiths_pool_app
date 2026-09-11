@@ -17,6 +17,8 @@ import {
 const Q108_ID = "108_additional_photos";
 const UNASSIGNED = "UNASSIGNED";
 const REVIEWED_FLAG = "__photoAssignmentsReviewed";
+const ASSIGNMENT_CONFLICT_ERROR =
+  "Job is no longer editable, or its photos or assignments changed. Refresh the job and try again.";
 
 // True ONLY for fields that carry a single-URL legacy mirror at
 // formData[fieldId] alongside a map entry in __photoAssignmentsByField.
@@ -124,19 +126,43 @@ function stealOneOwner(
 // DRAFT-guarded (ultrareview bug_006). Mirrors saveFormData's strategy:
 // a concurrent RHF autosave keystroke or saveSummaryItems write can land
 // anywhere around this statement and neither side clobbers the other's
-// keys. Known limit: the reserved map is a single jsonb key, so two
-// SIMULTANEOUS assignment actions still last-write-win against each
-// other's map (same as the previous full-replace behavior) — the fix
-// removes the cross-writer clobber of unrelated formData keys.
+// keys. Compare only the ownership map and photo mirrors used to prepare the
+// patch: concurrent assignment changes must be retried from a fresh snapshot,
+// while unrelated text and summary saves remain independent.
 async function mergeDraftFormDataPatch(
   jobId: string,
   patch: FormData,
+  expectedPhotos: PhotoMetadata[],
+  existing: FormData,
+  templatePhotoFieldIds: readonly string[],
 ): Promise<number> {
   const patchJson = JSON.stringify(patch);
+  // An assignment snapshot must not reintroduce a URL removed while this
+  // action was preparing its patch. New uploads can still append safely.
+  const expectedPhotosJson = JSON.stringify(
+    expectedPhotos.map(({ url }) => ({ url })),
+  );
+  const ownershipKeys = new Set([
+    RESERVED_PHOTO_MAP_KEY,
+    ...templatePhotoFieldIds,
+    // Include mirrors written for a legacy field absent from today's template.
+    ...Object.keys(patch).filter((key) => !key.startsWith("__")),
+  ]);
+  const expectedOwnershipJson = JSON.stringify(
+    Object.fromEntries(
+      [...ownershipKeys].map((key) => [key, existing[key] ?? null]),
+    ),
+  );
   return db.$executeRaw`
     UPDATE jobs
     SET form_data = COALESCE(form_data, '{}'::jsonb) || ${patchJson}::jsonb
     WHERE id = ${jobId} AND status::text = 'DRAFT'
+      AND COALESCE(photos, '[]'::jsonb) @> ${expectedPhotosJson}::jsonb
+      AND NOT EXISTS (
+        SELECT 1 FROM jsonb_each(${expectedOwnershipJson}::jsonb) AS expected(key, value)
+        WHERE COALESCE(form_data -> expected.key, 'null'::jsonb)
+          IS DISTINCT FROM expected.value
+      )
   `;
 }
 
@@ -208,10 +234,12 @@ export async function savePhotoAssignments(
   // NOT map-backed. Only these are owned by this legacy single-URL path;
   // map-backed fields go through assignMultiFieldPhotos / assignAdditional-
   // Photos and must not be rewritten here.
-  const legacyPhotoFieldIds = fields
-    .filter((f) => f.type === "photo" && f.id !== Q108_ID)
-    .map((f) => f.id)
-    .filter((id) => !isMapBacked(id));
+  const templatePhotoFieldIds = fields
+    .filter((f) => f.type === "photo")
+    .map((f) => f.id);
+  const legacyPhotoFieldIds = templatePhotoFieldIds.filter(
+    (id) => id !== Q108_ID && !isMapBacked(id),
+  );
   const legacyPhotoFieldSet = new Set(legacyPhotoFieldIds);
   const photoUrlSet = new Set(photos.map((p) => p.url));
 
@@ -260,9 +288,15 @@ export async function savePhotoAssignments(
   }
   patch[REVIEWED_FLAG] = true;
 
-  const affected = await mergeDraftFormDataPatch(jobId, patch);
+  const affected = await mergeDraftFormDataPatch(
+    jobId,
+    patch,
+    photos,
+    existing,
+    templatePhotoFieldIds,
+  );
   if (affected === 0) {
-    return { success: false, error: "Job is no longer editable" };
+    return { success: false, error: ASSIGNMENT_CONFLICT_ERROR };
   }
 
   revalidatePath(`/jobs/${jobId}`);
@@ -369,9 +403,15 @@ export async function assignMultiFieldPhotos(
   patch[fieldId] = unique[0] ?? "";
   patch[REVIEWED_FLAG] = true;
 
-  const affected = await mergeDraftFormDataPatch(jobId, patch);
+  const affected = await mergeDraftFormDataPatch(
+    jobId,
+    patch,
+    photos,
+    existing,
+    templatePhotoFieldIds,
+  );
   if (affected === 0) {
-    return { success: false, error: "Job is no longer editable" };
+    return { success: false, error: ASSIGNMENT_CONFLICT_ERROR };
   }
 
   revalidatePath(`/jobs/${jobId}`);
@@ -477,9 +517,15 @@ export async function assignAdditionalPhotos(
   patch[RESERVED_PHOTO_MAP_KEY] = currentMap;
   patch[REVIEWED_FLAG] = true;
 
-  const affected = await mergeDraftFormDataPatch(jobId, patch);
+  const affected = await mergeDraftFormDataPatch(
+    jobId,
+    patch,
+    photos,
+    existing,
+    templatePhotoFieldIds,
+  );
   if (affected === 0) {
-    return { success: false, error: "Job is no longer editable" };
+    return { success: false, error: ASSIGNMENT_CONFLICT_ERROR };
   }
 
   revalidatePath(`/jobs/${jobId}`);
@@ -592,9 +638,15 @@ export async function assignRemarksFieldPhotos(
   // non-`__` key that autosave could clobber.
   patch[REVIEWED_FLAG] = true;
 
-  const affected = await mergeDraftFormDataPatch(jobId, patch);
+  const affected = await mergeDraftFormDataPatch(
+    jobId,
+    patch,
+    photos,
+    existing,
+    templatePhotoFieldIds,
+  );
   if (affected === 0) {
-    return { success: false, error: "Job is no longer editable" };
+    return { success: false, error: ASSIGNMENT_CONFLICT_ERROR };
   }
 
   revalidatePath(`/jobs/${jobId}`);

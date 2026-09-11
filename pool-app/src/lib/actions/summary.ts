@@ -129,14 +129,24 @@ export async function saveSummaryItems(
     `;
   } else {
     const patchJson = JSON.stringify({ [storageKey]: normalized });
+    const requiredPhotosJson = JSON.stringify(
+      [...new Set(normalized.flatMap((item) => item.photos))].map((url) => ({
+        url,
+      })),
+    );
     affected = await db.$executeRaw`
       UPDATE jobs
       SET form_data = COALESCE(form_data, '{}'::jsonb) || ${patchJson}::jsonb
       WHERE id = ${jobId} AND status::text = 'DRAFT'
+        AND COALESCE(photos, '[]'::jsonb) @> ${requiredPhotosJson}::jsonb
     `;
   }
   if (affected === 0) {
-    return { success: false, error: "Job is no longer editable" };
+    return {
+      success: false,
+      error:
+        "Job is no longer editable, or a selected photo was removed. Refresh and try again.",
+    };
   }
 
   revalidatePath(`/jobs/${jobId}`);

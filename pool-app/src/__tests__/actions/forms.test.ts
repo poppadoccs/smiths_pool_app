@@ -18,7 +18,14 @@ vi.mock("next/cache", () => ({
 import { saveFormData } from "@/lib/actions/forms";
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
-import { RESERVED_PHOTO_MAP_KEY, REVIEWED_FLAG } from "@/lib/multi-photo";
+import {
+  ADDITIONAL_PHOTOS_FIELD_ID,
+  MULTI_PHOTO_FIELD_IDS,
+  RESERVED_PHOTO_MAP_KEY,
+  REVIEWED_FLAG,
+  readFieldPhotoUrls,
+} from "@/lib/multi-photo";
+import { getDefaultValues, type FormTemplate } from "@/lib/forms";
 import { RESERVED_SUMMARY_KEY } from "@/lib/summary";
 
 const MULTI_FIELD = "5_picture_of_pool_and_spa_if_applicable";
@@ -186,6 +193,146 @@ describe("saveFormData", () => {
     const patch = writtenPatch();
     expect(patch.foo).toBe("b");
     expect(patch).not.toHaveProperty(RESERVED_PHOTO_MAP_KEY);
+  });
+
+  it.each([...MULTI_PHOTO_FIELD_IDS, ADDITIONAL_PHOTOS_FIELD_ID])(
+    "omits stale RHF values for managed photo field %s even without a map entry",
+    async (fieldId) => {
+      vi.mocked(db.job.findUnique).mockResolvedValue({
+        id: "job-1",
+        status: "DRAFT",
+        formData: { [fieldId]: "", [RESERVED_PHOTO_MAP_KEY]: {} },
+      } as never);
+
+      await saveFormData("job-1", {
+        customer_name: "Updated customer",
+        [fieldId]: "stale-photo-url",
+      });
+      expect(writtenPatch()).toEqual({ customer_name: "Updated customer" });
+    },
+  );
+
+  it("does not resurrect a cleared mirror when reassignment commits after the autosave read", async () => {
+    const newOwner = "16_photo_of_pool_pump";
+    const job = {
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        customer_name: "Old customer",
+        [MULTI_FIELD]: "shared-photo",
+        [newOwner]: "",
+        [ADDITIONAL_PHOTOS_FIELD_ID]: "",
+        [RESERVED_PHOTO_MAP_KEY]: { [MULTI_FIELD]: ["shared-photo"] },
+      } as Record<string, unknown>,
+    };
+    vi.mocked(db.job.findUnique).mockImplementation((async () =>
+      structuredClone(job)) as never);
+    vi.mocked(db.$executeRaw).mockImplementation((async (
+      _sql: TemplateStringsArray,
+      patchJson: string,
+    ) => {
+      // A dedicated assignment completes before this atomic autosave UPDATE.
+      job.formData[RESERVED_PHOTO_MAP_KEY] = { [newOwner]: ["shared-photo"] };
+      job.formData[MULTI_FIELD] = "";
+      job.formData[newOwner] = "shared-photo";
+      job.formData = { ...job.formData, ...JSON.parse(patchJson) };
+      return 1;
+    }) as never);
+
+    await saveFormData("job-1", {
+      customer_name: "New customer",
+      [MULTI_FIELD]: "shared-photo",
+      [newOwner]: "",
+      [ADDITIONAL_PHOTOS_FIELD_ID]: "old-additional-photo",
+    });
+    expect(job.formData.customer_name).toBe("New customer");
+    expect(readFieldPhotoUrls(job.formData, MULTI_FIELD)).toEqual([]);
+    expect(readFieldPhotoUrls(job.formData, newOwner)).toEqual([
+      "shared-photo",
+    ]);
+    expect(job.formData[newOwner]).toBe("shared-photo");
+    expect(job.formData[ADDITIONAL_PHOTOS_FIELD_ID]).toBe("");
+  });
+
+  it("also protects a legacy field currently owned by the reserved assignment map", async () => {
+    const legacyField = "custom_pool_photo";
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: {
+        [legacyField]: "current-photo",
+        [RESERVED_PHOTO_MAP_KEY]: { [legacyField]: ["current-photo"] },
+      },
+    } as never);
+
+    await saveFormData("job-1", {
+      [legacyField]: "stale-photo",
+      notes: "New notes",
+    });
+    expect(writtenPatch()).toEqual({ notes: "New notes" });
+  });
+
+  it("preserves normal RHF changes for true legacy single-slot photo fields", async () => {
+    const legacyField = "custom_pool_photo";
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: { [legacyField]: "old-photo", [RESERVED_PHOTO_MAP_KEY]: {} },
+      template: { fields: [{ id: legacyField, type: "photo" }] },
+    } as never);
+
+    await saveFormData("job-1", {
+      [legacyField]: "new-upload",
+      notes: "New notes",
+    });
+    expect(writtenPatch()).toEqual({
+      [legacyField]: "new-upload",
+      notes: "New notes",
+    });
+  });
+
+  it("accepts an initialized new template without saving client values into managed mirrors", async () => {
+    const managedIds = [...MULTI_PHOTO_FIELD_IDS, ADDITIONAL_PHOTOS_FIELD_ID];
+    const template: FormTemplate = {
+      id: "fresh-template",
+      name: "Fresh template",
+      version: 1,
+      fields: [
+        ...managedIds.map((id, order) => ({
+          id,
+          order,
+          label: id,
+          type: "photo" as const,
+          required: false,
+        })),
+        ...Array.from({ length: 14 }, (_, i) => ({
+          id: `text_${i}`,
+          order: i + managedIds.length,
+          label: `Text ${i}`,
+          type: "text" as const,
+          required: false,
+        })),
+      ],
+    };
+    vi.mocked(db.job.findUnique).mockResolvedValue({
+      id: "job-1",
+      status: "DRAFT",
+      formData: null,
+      template,
+    } as never);
+
+    await saveFormData("job-1", {
+      ...getDefaultValues(template),
+      text_0: "Started",
+    });
+    const patch = writtenPatch();
+    expect(patch.text_0).toBe("Started");
+    expect(Object.keys(patch)).toHaveLength(14);
+    for (const fieldId of managedIds) expect(patch).not.toHaveProperty(fieldId);
+    // Optional, unassigned photo keys do not cross the submit integrity limit.
+    expect(
+      template.fields.filter((field) => !(field.id in patch)).length,
+    ).toBeLessThanOrEqual(template.fields.length * 0.5);
   });
 
   it("rejects writes to SUBMITTED jobs and issues no UPDATE", async () => {

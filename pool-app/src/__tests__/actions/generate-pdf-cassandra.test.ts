@@ -63,7 +63,11 @@ function photoMeta(url: string, includedInPdf?: boolean) {
 }
 
 function okFetchResponse() {
-  return { arrayBuffer: async () => fakeImageBytes } as unknown as Response;
+  return {
+    ok: true,
+    redirected: false,
+    arrayBuffer: async () => fakeImageBytes,
+  } as unknown as Response;
 }
 
 function fetchedUrls(): string[] {
@@ -177,15 +181,21 @@ describe("generateJobPdf — structured summary items (client ask #11)", () => {
       submittedAt: null,
       workerSignature: null,
       photos: [
-        photoMeta("http://test.local/s1"),
-        photoMeta("http://test.local/s2"),
-        photoMeta("http://test.local/orphan"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/s1"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/s2"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/orphan"),
       ],
       formData: {
         "107_summary": "OLD LEGACY BLOB TEXT",
         __summary_items: [
-          { text: "Algae noted on steps", photos: ["http://test.local/s1"] },
-          { text: "Loose inlet fitting", photos: ["http://test.local/s2"] },
+          {
+            text: "Algae noted on steps",
+            photos: ["https://test-store.public.blob.vercel-storage.com/s1"],
+          },
+          {
+            text: "Loose inlet fitting",
+            photos: ["https://test-store.public.blob.vercel-storage.com/s2"],
+          },
         ],
         __photoAssignmentsReviewed: true,
       },
@@ -214,8 +224,12 @@ describe("generateJobPdf — structured summary items (client ask #11)", () => {
     expect(textWasDrawn("OLD LEGACY BLOB TEXT")).toBe(false);
 
     const urls = fetchedUrls();
-    expect(urls).toContain("http://test.local/s1");
-    expect(urls).toContain("http://test.local/s2");
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/s1",
+    );
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/s2",
+    );
   });
 
   it("summary-claimed photos do NOT also drain under Q108; orphans still do", async () => {
@@ -226,12 +240,22 @@ describe("generateJobPdf — structured summary items (client ask #11)", () => {
 
     const urls = fetchedUrls();
     // Each summary photo fetched exactly once (no Q108 duplication).
-    expect(urls.filter((u) => u === "http://test.local/s1")).toHaveLength(1);
-    expect(urls.filter((u) => u === "http://test.local/s2")).toHaveLength(1);
+    expect(
+      urls.filter(
+        (u) => u === "https://test-store.public.blob.vercel-storage.com/s1",
+      ),
+    ).toHaveLength(1);
+    expect(
+      urls.filter(
+        (u) => u === "https://test-store.public.blob.vercel-storage.com/s2",
+      ),
+    ).toHaveLength(1);
     // The unclaimed photo still drains under Q108.
-    expect(urls.filter((u) => u === "http://test.local/orphan")).toHaveLength(
-      1,
-    );
+    expect(
+      urls.filter(
+        (u) => u === "https://test-store.public.blob.vercel-storage.com/orphan",
+      ),
+    ).toHaveLength(1);
     expect(jpegImageCount()).toBe(3);
   });
 
@@ -239,9 +263,12 @@ describe("generateJobPdf — structured summary items (client ask #11)", () => {
     vi.mocked(db.job.findUnique).mockResolvedValue(
       jobWithSummary({
         photos: [
-          photoMeta("http://test.local/s1", false),
-          photoMeta("http://test.local/s2"),
-          photoMeta("http://test.local/orphan"),
+          photoMeta(
+            "https://test-store.public.blob.vercel-storage.com/s1",
+            false,
+          ),
+          photoMeta("https://test-store.public.blob.vercel-storage.com/s2"),
+          photoMeta("https://test-store.public.blob.vercel-storage.com/orphan"),
         ],
       }) as never,
     );
@@ -250,8 +277,12 @@ describe("generateJobPdf — structured summary items (client ask #11)", () => {
     expect(res.success).toBe(true);
 
     const urls = fetchedUrls();
-    expect(urls).not.toContain("http://test.local/s1");
-    expect(urls).toContain("http://test.local/s2");
+    expect(urls).not.toContain(
+      "https://test-store.public.blob.vercel-storage.com/s1",
+    );
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/s2",
+    );
     expect(jpegImageCount()).toBe(2);
   });
 
@@ -296,7 +327,8 @@ describe("generateJobPdf — structured summary items (client ask #11)", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
-        if (url === "http://test.local/s1") throw new Error("boom");
+        if (url === "https://test-store.public.blob.vercel-storage.com/s1")
+          throw new Error("boom");
         return okFetchResponse();
       }),
     );

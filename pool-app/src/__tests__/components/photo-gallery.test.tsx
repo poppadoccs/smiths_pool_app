@@ -1,12 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
+import {
+  render as renderView,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
+import { useState, type ReactElement } from "react";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
 }));
 
 vi.mock("sonner", () => ({
-  toast: { error: vi.fn(), success: vi.fn() },
+  toast: { error: vi.fn(), success: vi.fn(), warning: vi.fn() },
 }));
 
 vi.mock("@/lib/actions/photos", () => ({
@@ -23,7 +31,44 @@ vi.mock("@/components/photo-lightbox", () => ({
 
 import { PhotoGallery } from "@/components/photo-gallery";
 import { deletePhoto, setPhotoIncludedInPdf } from "@/lib/actions/photos";
+import { toast } from "sonner";
 import type { PhotoMetadata } from "@/lib/photos";
+import {
+  JobSaveProvider,
+  useJobSaveHandler,
+  useJobSaves,
+} from "@/components/job-save-provider";
+
+const saveForm = vi.fn(async () => undefined);
+function SaveControls() {
+  useJobSaveHandler("form", saveForm);
+  const { saveAll } = useJobSaves();
+  const [status, setStatus] = useState("");
+  return (
+    <>
+      <button
+        onClick={() => {
+          setStatus("Saving");
+          void saveAll().then(
+            () => setStatus("Saved"),
+            () => setStatus("Save failed"),
+          );
+        }}
+      >
+        Save all
+      </button>
+      <output>{status}</output>
+    </>
+  );
+}
+function render(element: ReactElement) {
+  return renderView(
+    <JobSaveProvider>
+      <SaveControls />
+      {element}
+    </JobSaveProvider>,
+  );
+}
 
 function photo(
   overrides: Partial<PhotoMetadata> & Pick<PhotoMetadata, "url">,
@@ -41,6 +86,27 @@ beforeEach(() => {
 });
 
 describe("PhotoGallery — empty + base render", () => {
+  it("reports incomplete Blob cleanup without claiming the file was deleted", async () => {
+    vi.mocked(deletePhoto).mockResolvedValueOnce({
+      success: true,
+      blobCleanupPending: true,
+    });
+    render(
+      <PhotoGallery
+        photos={[photo({ url: "http://test/cleanup" })]}
+        jobId="job-1"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete photo" }));
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith(
+        "Photo removed from the job; stored file cleanup could not finish.",
+      ),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it("renders empty-state copy when there are no photos", () => {
     render(<PhotoGallery photos={[]} jobId="job-1" />);
     expect(screen.getByText(/No photos yet/i)).toBeTruthy();
@@ -245,6 +311,59 @@ describe("PhotoGallery — PDF include/exclude toggle", () => {
 });
 
 describe("PhotoGallery — delete still works alongside the new toggle", () => {
+  it("global save waits for deletion and disables further photo changes", async () => {
+    let finish!: (value: {
+      success: true;
+      blobCleanupPending: boolean;
+    }) => void;
+    vi.mocked(deletePhoto).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(
+      <PhotoGallery
+        photos={[photo({ url: "http://test/pending" })]}
+        jobId="job-1"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete photo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save all" }));
+    await waitFor(() => expect(deletePhoto).toHaveBeenCalled());
+    expect(saveForm).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: /Exclude pending/ }),
+    ).toBeDisabled();
+    await act(async () => finish({ success: true, blobCleanupPending: false }));
+    await waitFor(() => expect(screen.getByText("Saved")).toBeInTheDocument());
+    expect(saveForm).toHaveBeenCalledTimes(1);
+  });
+
+  it("failed photo changes block save until retried or explicitly dismissed", async () => {
+    vi.mocked(setPhotoIncludedInPdf).mockRejectedValueOnce(
+      new Error("offline"),
+    );
+    render(
+      <PhotoGallery
+        photos={[photo({ url: "http://test/failed" })]}
+        jobId="job-1"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Exclude failed/ }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Save all" }));
+    await waitFor(() =>
+      expect(screen.getByText("Save failed")).toBeInTheDocument(),
+    );
+    expect(saveForm).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Dismiss failed photo change" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save all" }));
+    await waitFor(() => expect(screen.getByText("Saved")).toBeInTheDocument());
+  });
+
   it("delete button on an included photo still calls deletePhoto (no regression from adding the new toggle)", async () => {
     render(
       <PhotoGallery photos={[photo({ url: "http://test/d" })]} jobId="job-1" />,

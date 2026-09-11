@@ -1,6 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { act } from "react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  render as renderView,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
+import { act, type ReactNode } from "react";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
@@ -15,14 +20,15 @@ vi.mock("@/lib/actions/photo-assignments", () => ({
   assignAdditionalPhotos: vi.fn(async () => ({ success: true })),
 }));
 
-// The component pulls savePhotoMetadata for the capture path, which
-// transitively loads Prisma. Tests never exercise capture, but the
-// import still runs — mock the whole module to keep it DB-free.
-vi.mock("@/lib/actions/photos", () => ({
-  savePhotoMetadata: vi.fn(async () => ({ success: true })),
-}));
+vi.mock("browser-image-compression", () => ({ default: vi.fn() }));
 
 import { MultiPhotoField } from "@/components/multi-photo-field";
+import imageCompression from "browser-image-compression";
+import {
+  JobSaveProvider,
+  useJobSaveHandler,
+  useJobSaves,
+} from "@/components/job-save-provider";
 import {
   assignAdditionalPhotos,
   assignMultiFieldPhotos,
@@ -47,9 +53,43 @@ const Q5_ID = "5_picture_of_pool_and_spa_if_applicable";
 const Q16_ID = "16_photo_of_pool_pump";
 const Q108_ID = "108_additional_photos";
 
+function render(element: ReactNode) {
+  return renderView(<JobSaveProvider>{element}</JobSaveProvider>);
+}
+
+const saveForm = vi.fn(async () => undefined);
+const submit = vi.fn(async () => undefined);
+const submitError = vi.fn();
+function SubmitProbe() {
+  const saves = useJobSaves();
+  useJobSaveHandler("form", saveForm);
+  return (
+    <button onClick={() => void saves.runAfterSave(submit).catch(submitError)}>
+      Submit probe
+    </button>
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(assignMultiFieldPhotos).mockResolvedValue({ success: true });
+  vi.mocked(assignAdditionalPhotos).mockResolvedValue({ success: true });
+  vi.mocked(imageCompression).mockImplementation(async (file) => file);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        url: "http://test/uploaded",
+        size: 4,
+        filename: "captured.jpg",
+        uploadedAt: "2026-09-11",
+      }),
+    })),
+  );
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("MultiPhotoField", () => {
   it("renders companion UI for a multi-photo field with the correct owner marker", () => {
@@ -487,5 +527,127 @@ describe("MultiPhotoField", () => {
       i.getAttribute("src"),
     );
     expect(srcs).toEqual(["http://test/persisted"]);
+  });
+
+  it("uses route-owned registration and waits for capture assignment before submitting", async () => {
+    let completeUpload!: (value: Response) => void;
+    let completeAssignment!: (value: { success: true }) => void;
+    vi.mocked(fetch).mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          completeUpload = resolve;
+        }) as Promise<Response>,
+    );
+    vi.mocked(assignMultiFieldPhotos).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          completeAssignment = resolve;
+        }),
+    );
+    const { container } = render(
+      <>
+        <MultiPhotoField
+          jobId="job-1"
+          field={photoField(Q5_ID, "Q5")}
+          jobPhotos={[]}
+          formData={null}
+        />
+        <SubmitProbe />
+      </>,
+    );
+    const file = new File(["jpeg"], "Pool view.jpg", { type: "image/jpeg" });
+    fireEvent.change(container.querySelector('input[type="file"]')!, {
+      target: { files: [file] },
+    });
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const [, options] = vi.mocked(fetch).mock.calls[0];
+    const body = options!.body as FormData;
+    expect(body.get("jobId")).toBe("job-1");
+    expect(body.get("originalFilename")).toBe("Pool view.jpg");
+    expect(body.get("file")).toBeInstanceOf(File);
+    expect(body.has("url")).toBe(false);
+    fireEvent.click(screen.getByText("Submit probe"));
+    expect(submit).not.toHaveBeenCalled();
+    expect(saveForm).not.toHaveBeenCalled();
+    await act(async () =>
+      completeUpload({
+        ok: true,
+        json: async () => ({ url: "http://test/uploaded" }),
+      } as Response),
+    );
+    expect(assignMultiFieldPhotos).toHaveBeenCalledWith("job-1", Q5_ID, [
+      "http://test/uploaded",
+    ]);
+    expect(submit).not.toHaveBeenCalled();
+    expect(saveForm).not.toHaveBeenCalled();
+    await act(async () => completeAssignment({ success: true }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    expect(saveForm).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks submit after a capture assignment failure until it is dismissed", async () => {
+    vi.mocked(assignMultiFieldPhotos).mockResolvedValue({
+      success: false,
+      error: "Assignment failed",
+    });
+    const { container } = render(
+      <>
+        <MultiPhotoField
+          jobId="job-1"
+          field={photoField(Q5_ID, "Q5")}
+          jobPhotos={[]}
+          formData={null}
+        />
+        <SubmitProbe />
+      </>,
+    );
+    fireEvent.change(container.querySelector('input[type="file"]')!, {
+      target: {
+        files: [new File(["jpeg"], "captured.jpg", { type: "image/jpeg" })],
+      },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain(
+        "Assignment failed",
+      ),
+    );
+    fireEvent.click(screen.getByText("Submit probe"));
+    await waitFor(() => expect(submitError).toHaveBeenCalledTimes(1));
+    expect(submit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Dismiss failed photo change"));
+    fireEvent.click(screen.getByText("Submit probe"));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not assign a photo when upload registration is rejected", async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: false,
+      json: async () => ({ error: "Job is no longer editable" }),
+    } as Response);
+    const { container } = render(
+      <>
+        <MultiPhotoField
+          jobId="job-1"
+          field={photoField(Q5_ID, "Q5")}
+          jobPhotos={[]}
+          formData={null}
+        />
+        <SubmitProbe />
+      </>,
+    );
+    fireEvent.change(container.querySelector('input[type="file"]')!, {
+      target: {
+        files: [new File(["jpeg"], "captured.jpg", { type: "image/jpeg" })],
+      },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain(
+        "Job is no longer editable",
+      ),
+    );
+    expect(assignMultiFieldPhotos).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Submit probe"));
+    await waitFor(() => expect(submitError).toHaveBeenCalledTimes(1));
+    expect(submit).not.toHaveBeenCalled();
   });
 });

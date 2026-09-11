@@ -30,16 +30,25 @@ const photo: PhotoMetadata = {
   uploadedAt: "2026-09-10",
 };
 
-function email(formData: FormData, photos: PhotoMetadata[] = []) {
+function email(
+  formData: FormData,
+  photos: PhotoMetadata[] = [],
+  reportTemplate = template,
+) {
   return buildSubmissionEmail({
     jobTitle: "[TEST] Reinspection",
     jobNumber: null,
     submittedBy: "Test",
-    template,
+    template: reportTemplate,
     formData,
     photos,
   });
 }
+
+const summaryCases = [
+  { id: "107_summary", label: "107. Summary", key: RESERVED_SUMMARY_KEY },
+  { id: Q109, label: REINSPECTION_LABEL, key: KEY },
+];
 
 describe("Q109 in office email", () => {
   it("omits an unused optional section", () => {
@@ -76,6 +85,63 @@ describe("Q109 in office email", () => {
       email({ [KEY]: [{ text: "", photos: [photo.url] }] }, [photo]),
     ).toContain(REINSPECTION_LABEL);
   });
+  it.each(summaryCases)(
+    "retains a photo-only legacy reference absent from metadata in $label",
+    ({ id, label, key }) => {
+      const html = email({ [key]: [{ text: "", photos: [photo.url] }] }, [], {
+        ...template,
+        fields: [{ ...template.fields[0], id, label }],
+      });
+      expect(html).toContain(label);
+      const document = new DOMParser().parseFromString(html, "text/html");
+      expect(
+        [...document.querySelectorAll("img")].map((img) => img.src),
+      ).toEqual([photo.url]);
+    },
+  );
+  it.each(summaryCases)(
+    "honors explicit exclusions and avoids gallery duplicates in $label",
+    ({ id, label, key }) => {
+      const legacyUrl = "https://test/legacy-summary.jpg";
+      const excluded = {
+        ...photo,
+        url: "https://test/excluded.jpg",
+        includedInPdf: false,
+      };
+      const unrelated = { ...photo, url: "https://test/unrelated.jpg" };
+      const html = email(
+        {
+          [key]: [{ text: "", photos: [legacyUrl, photo.url, excluded.url] }],
+        },
+        [photo, excluded, unrelated],
+        {
+          ...template,
+          fields: [{ ...template.fields[0], id, label }],
+        },
+      );
+      const document = new DOMParser().parseFromString(html, "text/html");
+      const row = [...document.querySelectorAll("tr")].find(
+        (candidate) =>
+          candidate.firstElementChild?.textContent?.trim() === label,
+      );
+      expect([...row!.querySelectorAll("img")].map((img) => img.src)).toEqual([
+        legacyUrl,
+        photo.url,
+      ]);
+      const allUrls = [...document.querySelectorAll("img")].map(
+        (img) => img.src,
+      );
+      expect(allUrls).toEqual([
+        legacyUrl,
+        photo.url,
+        unrelated.url,
+        excluded.url,
+      ]);
+      expect(html.indexOf(`src="${excluded.url}"`)).toBeGreaterThan(
+        html.indexOf("Excluded from PDF"),
+      );
+    },
+  );
   it("keeps excluded photos only in the existing reference section", () => {
     const html = email({ [KEY]: [{ text: "", photos: [photo.url] }] }, [
       { ...photo, includedInPdf: false },

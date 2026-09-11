@@ -50,84 +50,8 @@ export async function submitJob(
     if (sigError) return { success: false, error: sigError };
   }
 
-  // 1. Load job with template
-  const job = await db.job.findUnique({
-    where: { id: jobId },
-    include: { template: true },
-  });
-  if (!job) return { success: false, error: "Job not found" };
-
-  // 2. Prevent double-submit (read check for fast-path UX feedback only;
-  //    the atomic updateMany below is the real guard against concurrent submits)
-  if (job.status === "SUBMITTED") {
-    return { success: false, error: "This job has already been submitted" };
-  }
-  // ARCHIVED is terminal (ultrareview bug_010) — archiveJob/reopenJob both
-  // pin their source states, and the state machine has no ARCHIVED→SUBMITTED
-  // edge. A stale tab or replayed action must not resurrect a closed job.
-  if (job.status !== "DRAFT") {
-    return {
-      success: false,
-      error: "This job is archived and cannot be submitted",
-    };
-  }
-
-  // 3. Validate form data exists
-  const formData = job.formData as FormData | null;
-  if (!formData) {
-    return {
-      success: false,
-      error: "Please fill out the form before submitting",
-    };
-  }
-
-  // Structural integrity: verify expected field IDs are present
-  const tplFields = job.template
-    ? (job.template.fields as { id: string }[])
-    : [];
-  const payloadKeys = new Set(Object.keys(formData));
-  const missingIds = tplFields
-    .map((f) => f.id)
-    .filter((id) => !payloadKeys.has(id));
-
-  console.log(
-    `[submit] Job ${jobId}: ${payloadKeys.size} keys, template expects ${tplFields.length}, missing ${missingIds.length}`,
-  );
-  if (tplFields.length >= 20 && missingIds.length > tplFields.length * 0.5) {
-    return {
-      success: false,
-      error: `Data integrity error: ${missingIds.length} of ${tplFields.length} fields are missing. The form may not have loaded correctly — go back and try again.`,
-    };
-  }
-
-  // Resolve template: DB template or fallback to hardcoded default
-  const template: FormTemplate = job.template
-    ? {
-        id: job.template.id,
-        name: job.template.name,
-        version: 1,
-        fields: (job.template.fields as FormField[]).sort(
-          (a, b) => a.order - b.order,
-        ),
-      }
-    : DEFAULT_TEMPLATE;
-
-  // 4. Check required fields have values
-  const requiredFields = template.fields.filter((f) => f.required);
-  const missingFields = requiredFields.filter((f) => {
-    const value = formData[f.id];
-    return value === undefined || value === "" || value === null;
-  });
-  if (missingFields.length > 0) {
-    const names = missingFields.map((f) => f.label).join(", ");
-    return { success: false, error: `Missing required fields: ${names}` };
-  }
-
-  // 5. Preflight — verify email configured before committing anything
-  const photos = (job.photos as PhotoMetadata[]) || [];
-  const jobTitle =
-    job.name || (job.jobNumber ? `Job #${job.jobNumber}` : `Job ${job.id}`);
-
+  // Resolve settings before taking the job lock. Settings, PDF fetches and
+  // email delivery must never keep a database transaction open.
   const submissionEmail = await getRecipientEmail();
   if (!submissionEmail) {
     return {
@@ -137,25 +61,109 @@ export async function submitJob(
     };
   }
 
-  // 6. Atomic DB write — updateMany with status guard prevents concurrent double-submits.
-  // Pessimistic durable flag: lastEmailFailed defaults to true on the SUBMITTED
-  // transition and is cleared to false only after a confirmed Resend success
-  // (step 8 below). If anything in the post-send path fails — Resend error,
-  // network throw, or even the clear-write itself — the flag stays true so
-  // the submitted-job page warns durably instead of falsely claiming success.
-  const updated = await db.job.updateMany({
-    where: { id: jobId, status: "DRAFT" },
-    data: {
-      status: "SUBMITTED",
-      submittedBy,
-      submittedAt: new Date(),
-      workerSignature: workerSignature || null,
-      lastEmailFailed: true,
-    },
+  // Read, validate and submit the same locked row. A draft save that wins the
+  // lock is included in this snapshot; a save that waits behind submission
+  // fails its atomic DRAFT guard after commit. Keep this snapshot for the
+  // email instead of an earlier read that could disagree with the saved job.
+  const submission = await db.$transaction(async (tx) => {
+    await tx.$queryRaw`
+      SELECT id FROM jobs WHERE id = ${jobId} FOR UPDATE
+    `;
+    const job = await tx.job.findUnique({
+      where: { id: jobId },
+      include: { template: true },
+    });
+    if (!job) return { success: false as const, error: "Job not found" };
+    if (job.status === "SUBMITTED") {
+      return {
+        success: false as const,
+        error: "This job has already been submitted",
+      };
+    }
+    // ARCHIVED is terminal: a stale tab must not resurrect a closed job.
+    if (job.status !== "DRAFT") {
+      return {
+        success: false as const,
+        error: "This job is archived and cannot be submitted",
+      };
+    }
+
+    const formData = job.formData as FormData | null;
+    if (!formData) {
+      return {
+        success: false as const,
+        error: "Please fill out the form before submitting",
+      };
+    }
+
+    // Structural integrity: verify expected field IDs are present.
+    const tplFields = job.template
+      ? (job.template.fields as { id: string }[])
+      : [];
+    const payloadKeys = new Set(Object.keys(formData));
+    const missingIds = tplFields
+      .map((f) => f.id)
+      .filter((id) => !payloadKeys.has(id));
+
+    console.log(
+      `[submit] Job ${jobId}: ${payloadKeys.size} keys, template expects ${tplFields.length}, missing ${missingIds.length}`,
+    );
+    if (tplFields.length >= 20 && missingIds.length > tplFields.length * 0.5) {
+      return {
+        success: false as const,
+        error: `Data integrity error: ${missingIds.length} of ${tplFields.length} fields are missing. The form may not have loaded correctly — go back and try again.`,
+      };
+    }
+
+    const template: FormTemplate = job.template
+      ? {
+          id: job.template.id,
+          name: job.template.name,
+          version: 1,
+          fields: [...(job.template.fields as FormField[])].sort(
+            (a, b) => a.order - b.order,
+          ),
+        }
+      : DEFAULT_TEMPLATE;
+    const missingFields = template.fields
+      .filter((field) => field.required)
+      .filter((field) => {
+        const value = formData[field.id];
+        return value === undefined || value === "" || value === null;
+      });
+    if (missingFields.length > 0) {
+      const names = missingFields.map((field) => field.label).join(", ");
+      return {
+        success: false as const,
+        error: `Missing required fields: ${names}`,
+      };
+    }
+
+    // The durable failure flag is set with the status transition and cleared
+    // only after confirmed delivery, outside the transaction below.
+    const updated = await tx.job.updateMany({
+      where: { id: jobId, status: "DRAFT" },
+      data: {
+        status: "SUBMITTED",
+        submittedBy,
+        submittedAt: new Date(),
+        workerSignature: workerSignature || null,
+        lastEmailFailed: true,
+      },
+    });
+    if (updated.count === 0) {
+      return {
+        success: false as const,
+        error: "This job has already been submitted",
+      };
+    }
+    return { success: true as const, job, formData, template };
   });
-  if (updated.count === 0) {
-    return { success: false, error: "This job has already been submitted" };
-  }
+  if (!submission.success) return submission;
+  const { job, formData, template } = submission;
+  const photos = (job.photos as PhotoMetadata[]) || [];
+  const jobTitle =
+    job.name || (job.jobNumber ? `Job #${job.jobNumber}` : `Job ${job.id}`);
 
   // 7. Generate branded PDF (non-blocking — email still sends if PDF fails)
   // jsPDF datauristring emits: data:application/pdf;filename=generated.pdf;base64,<data>

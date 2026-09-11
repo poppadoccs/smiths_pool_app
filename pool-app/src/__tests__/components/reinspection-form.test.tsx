@@ -1,11 +1,12 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import {
-  render,
+  render as renderUI,
   screen,
   fireEvent,
   waitFor,
   within,
 } from "@testing-library/react";
+import type { ReactElement } from "react";
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 vi.mock("@/lib/actions/forms", () => ({
@@ -23,6 +24,7 @@ vi.mock("@/components/import-from-paper", () => ({
 }));
 vi.mock("@/components/sticky-form-nav", () => ({ StickyFormNav: () => null }));
 import { JobForm } from "@/components/job-form";
+import { JobSaveProvider } from "@/components/job-save-provider";
 import { saveSummaryItems } from "@/lib/actions/summary";
 import {
   REINSPECTION_FIELD_ID as Q109,
@@ -73,8 +75,12 @@ function section(label: string) {
   return within(screen.getByRole("group", { name: label }));
 }
 
+function render(ui: ReactElement) {
+  return renderUI(ui, { wrapper: JobSaveProvider });
+}
+
 describe("Q109 reuses the Q107 editor", () => {
-  it("provides matching empty states and bullet-list controls for both optional sections", () => {
+  it("provides matching empty states and bullet-list controls for both optional sections", async () => {
     render(<JobForm jobId="empty" template={template} initialData={null} />);
     for (const label of ["107. Summary", REINSPECTION_LABEL]) {
       expect(section(label).getByText("No summary yet.")).toBeTruthy();
@@ -91,6 +97,7 @@ describe("Q109 reuses the Q107 editor", () => {
         section(label).getByRole("textbox").getAttribute("maxlength"),
       ).toBe(String(SUMMARY_TEXT_MAX_LENGTH));
     }
+    await waitFor(() => expect(saveSummaryItems).toHaveBeenCalledTimes(2));
   });
 
   it("edits, attaches, reorders, removes, and reopens Q109 without changing Q107", async () => {

@@ -14,6 +14,7 @@ import { PhotoAssignmentsEditor } from "@/components/photo-assignments";
 import type { PhotoMetadata } from "@/lib/photos";
 import { JobForm } from "@/components/job-form";
 import { SubmitSection } from "@/components/submit-section";
+import { JobSaveProvider } from "@/components/job-save-provider";
 import { EditableCopyButton } from "@/components/editable-copy-button";
 import { isEditableCopy } from "@/lib/multi-photo";
 import {
@@ -106,98 +107,100 @@ export default async function JobDetailPage({ params }: Props) {
 
       <Separator className="my-6" />
 
-      <div className="space-y-4">
-        <Card>
-          <CardContent className="space-y-4 p-4">
-            <h2 className="text-lg font-semibold text-zinc-900">Photos</h2>
-            {isCopy && !isSubmitted && (
-              <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                Photo delete is disabled on editable copies. These photos are
-                shared with the original submitted job — deleting one here would
-                remove it there too. You can still upload new photos and change
-                photo assignments.
-              </p>
-            )}
-            <PhotoGallery
-              photos={job.photos as PhotoMetadata[]}
-              jobId={job.id}
-              readOnly={photosReadOnly}
-              allowPdfInclusionToggle={!isSubmitted}
-            />
-            {!isSubmitted && (
-              <>
-                <Separator />
-                <PhotoUpload jobId={job.id} />
-              </>
-            )}
-            {!isSubmitted && (job.photos as PhotoMetadata[]).length > 0 && (
-              <>
-                <Separator />
-                <PhotoAssignmentsEditor
-                  jobId={job.id}
-                  photos={job.photos as PhotoMetadata[]}
-                  template={template}
-                  initialFormData={(job.formData as FormData) ?? null}
-                />
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="space-y-4 p-4">
-            <h2 className="text-lg font-semibold text-zinc-900">Form</h2>
-            <JobForm
-              jobId={job.id}
-              template={template}
-              initialData={(job.formData as FormData) ?? null}
-              jobPhotos={job.photos as PhotoMetadata[]}
-              disabled={isSubmitted}
-            />
-          </CardContent>
-        </Card>
-
-        {!isSubmitted && (
+      <JobSaveProvider key={job.id}>
+        <div className="space-y-4">
           <Card>
-            <CardContent className="p-4">
-              <SubmitSection jobId={job.id} />
+            <CardContent className="space-y-4 p-4">
+              <h2 className="text-lg font-semibold text-zinc-900">Photos</h2>
+              {isCopy && !isSubmitted && (
+                <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  Photo delete is disabled on editable copies. These photos are
+                  shared with the original submitted job — deleting one here
+                  would remove it there too. You can still upload new photos and
+                  change photo assignments.
+                </p>
+              )}
+              <PhotoGallery
+                photos={job.photos as PhotoMetadata[]}
+                jobId={job.id}
+                readOnly={photosReadOnly}
+                allowPdfInclusionToggle={!isSubmitted}
+              />
+              {!isSubmitted && (
+                <>
+                  <Separator />
+                  <PhotoUpload jobId={job.id} />
+                </>
+              )}
+              {!isSubmitted && (job.photos as PhotoMetadata[]).length > 0 && (
+                <>
+                  <Separator />
+                  <PhotoAssignmentsEditor
+                    jobId={job.id}
+                    photos={job.photos as PhotoMetadata[]}
+                    template={template}
+                    initialFormData={(job.formData as FormData) ?? null}
+                  />
+                </>
+              )}
             </CardContent>
           </Card>
-        )}
 
-        {job.status === "SUBMITTED" && (
           <Card>
-            <CardContent className="space-y-3 p-4">
-              {job.lastEmailFailed === true && (
-                <div className="flex flex-col items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-center">
-                  <AlertTriangle className="size-8 text-amber-600" />
-                  <h3 className="text-base font-semibold text-amber-800">
-                    Email didn&apos;t send
-                  </h3>
-                  <p className="text-sm text-amber-700">
-                    The job is saved on our server, but the office hasn&apos;t
-                    received the email. Use <strong>Resend or edit</strong>{" "}
-                    below to try again, and let the office know directly so
-                    they&apos;re aware.
+            <CardContent className="space-y-4 p-4">
+              <h2 className="text-lg font-semibold text-zinc-900">Form</h2>
+              <JobForm
+                jobId={job.id}
+                template={template}
+                initialData={(job.formData as FormData) ?? null}
+                jobPhotos={job.photos as PhotoMetadata[]}
+                disabled={isSubmitted}
+              />
+            </CardContent>
+          </Card>
+
+          {!isSubmitted && (
+            <Card>
+              <CardContent className="p-4">
+                <SubmitSection jobId={job.id} />
+              </CardContent>
+            </Card>
+          )}
+
+          {job.status === "SUBMITTED" && (
+            <Card>
+              <CardContent className="space-y-3 p-4">
+                {job.lastEmailFailed === true && (
+                  <div className="flex flex-col items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-center">
+                    <AlertTriangle className="size-8 text-amber-600" />
+                    <h3 className="text-base font-semibold text-amber-800">
+                      Email didn&apos;t send
+                    </h3>
+                    <p className="text-sm text-amber-700">
+                      The job is saved on our server, but the office hasn&apos;t
+                      received the email. Use <strong>Resend or edit</strong>{" "}
+                      below to try again, and let the office know directly so
+                      they&apos;re aware.
+                    </p>
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <h2 className="text-lg font-semibold text-zinc-900">
+                    Resend or edit
+                  </h2>
+                  <p className="text-sm text-zinc-600">
+                    Need to resend this submission or fix something? Create a
+                    draft copy — the original stays submitted and unchanged.
+                    Submitting the copy re-sends the email with an updated PDF
+                    and editable link.
                   </p>
                 </div>
-              )}
-              <div className="space-y-1">
-                <h2 className="text-lg font-semibold text-zinc-900">
-                  Resend or edit
-                </h2>
-                <p className="text-sm text-zinc-600">
-                  Need to resend this submission or fix something? Create a
-                  draft copy — the original stays submitted and unchanged.
-                  Submitting the copy re-sends the email with an updated PDF and
-                  editable link.
-                </p>
-              </div>
-              <EditableCopyButton jobId={job.id} />
-            </CardContent>
-          </Card>
-        )}
-      </div>
+                <EditableCopyButton jobId={job.id} />
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </JobSaveProvider>
     </main>
   );
 }

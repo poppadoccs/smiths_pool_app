@@ -1,7 +1,7 @@
 // @vitest-environment node
 // Opt-in proof against an explicitly selected, isolated Neon branch.
 // Database reads and writes use the real Prisma adapter and application actions.
-// Cache invalidation and Blob deletion are mocked; no email is sent.
+// Cache invalidation, Blob deletion and email delivery are mocked.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -17,11 +17,27 @@ import {
 import { REINSPECTION_LABEL } from "@/lib/reinspection";
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
-vi.mock("@vercel/blob", () => ({ del: vi.fn(async () => undefined) }));
+const { deleteBlob, recipientEmail, sendEmail } = vi.hoisted(() => ({
+  deleteBlob: vi.fn(async () => undefined),
+  recipientEmail: vi.fn(async () => "qa@example.invalid"),
+  sendEmail: vi.fn(async (message: unknown) => {
+    void message;
+    return { data: { id: "qa-only" }, error: null };
+  }),
+}));
+vi.mock("@vercel/blob", () => ({ del: deleteBlob }));
+vi.mock("@/lib/actions/settings", () => ({
+  getRecipientEmail: recipientEmail,
+}));
+vi.mock("resend", () => ({
+  Resend: class {
+    emails = { send: sendEmail };
+  },
+}));
 
 const enabled = process.env.Q109_VERIFY_DATABASE === "1";
 const jobId = `qa-q109-${randomUUID()}`;
-let db: typeof import("@/lib/db")["db"];
+let db: (typeof import("@/lib/db"))["db"];
 let summary: typeof import("@/lib/actions/summary");
 let forms: typeof import("@/lib/actions/forms");
 let photos: typeof import("@/lib/actions/photos");
@@ -43,7 +59,9 @@ describe.skipIf(!enabled)("Q109 with the real isolated database", () => {
     if (!expectedHost || !process.env.Q109_VERIFICATION_TEMPLATE_ID)
       throw new Error("Explicit isolated host and template ID are required.");
     expect(new URL(process.env.DATABASE_URL!).hostname).toBe(expectedHost);
-    expect(process.env.Q109_VERIFICATION_BRANCH_NAME).toMatch(/^q109-verification-/);
+    expect(process.env.Q109_VERIFICATION_BRANCH_NAME).toMatch(
+      /^q109-verification-/,
+    );
     ({ db } = await import("@/lib/db"));
     [summary, forms, photos, pdf] = await Promise.all([
       import("@/lib/actions/summary"),
@@ -75,7 +93,9 @@ describe.skipIf(!enabled)("Q109 with the real isolated database", () => {
       required: false,
       type: "textarea",
     });
-    const baseForm = Object.fromEntries(fields.map((field) => [field.id, ""])) as FormData;
+    const baseForm = Object.fromEntries(
+      fields.map((field) => [field.id, ""]),
+    ) as FormData;
     await db.job.create({
       data: {
         id: jobId,
@@ -91,10 +111,30 @@ describe.skipIf(!enabled)("Q109 with the real isolated database", () => {
     const secondPng = readFileSync("public/icon-192.png");
     const firstPhoto = `data:image/png;base64,${firstPng.toString("base64")}`;
     const secondPhoto = `data:image/png;base64,${secondPng.toString("base64")}`;
-    await photos.savePhotoMetadata(jobId, { url: firstPhoto, filename: "qa-original.png", size: firstPng.length });
-    await photos.savePhotoMetadata(jobId, { url: secondPhoto, filename: "qa-reinspection.png", size: secondPng.length });
+    // Local fixtures are seeded directly. Real uploads are registered only by
+    // the upload route, whose multipart/Blob boundary has separate tests.
+    const fixturePhotos = [
+      {
+        url: firstPhoto,
+        filename: "qa-original.png",
+        size: firstPng.length,
+        uploadedAt: new Date().toISOString(),
+      },
+      {
+        url: secondPhoto,
+        filename: "qa-reinspection.png",
+        size: secondPng.length,
+        uploadedAt: new Date().toISOString(),
+      },
+    ];
+    await db.job.update({
+      where: { id: jobId },
+      data: { photos: fixturePhotos },
+    });
 
-    const original = [{ text: "ORIGINAL_DATABASE_FINDING", photos: [firstPhoto] }];
+    const original = [
+      { text: "ORIGINAL_DATABASE_FINDING", photos: [firstPhoto] },
+    ];
     const reinspect = [
       { text: "REINSPECTION_DATABASE_FINDING", photos: [secondPhoto] },
       { text: "SECOND_REINSPECTION_POINT", photos: [] },
@@ -124,15 +164,22 @@ describe.skipIf(!enabled)("Q109 with the real isolated database", () => {
     expect(pdfText).toContain("ORIGINAL_DATABASE_FINDING");
     expect(pdfText).toContain("REINSPECTION_DATABASE_FINDING");
     expect(pdfText).not.toContain("photo could not be loaded");
-    expect(pdfText.indexOf("ORIGINAL_DATABASE_FINDING")).toBeLessThan(pdfText.indexOf(REINSPECTION_LABEL));
-    expect(pdfText.indexOf("REINSPECTION_DATABASE_FINDING")).toBeGreaterThan(pdfText.indexOf(REINSPECTION_LABEL));
+    expect(pdfText.indexOf("ORIGINAL_DATABASE_FINDING")).toBeLessThan(
+      pdfText.indexOf(REINSPECTION_LABEL),
+    );
+    expect(pdfText.indexOf("REINSPECTION_DATABASE_FINDING")).toBeGreaterThan(
+      pdfText.indexOf(REINSPECTION_LABEL),
+    );
 
-    const makeEmail = (job: typeof reopened) => buildSubmissionEmail({
-      jobTitle: job.name!, jobNumber: job.jobNumber, submittedBy: "QA only",
-      formData: job.formData as FormData,
-      template: { id: template.id, name: template.name, version: 1, fields },
-      photos: job.photos as unknown as PhotoMetadata[],
-    });
+    const makeEmail = (job: typeof reopened) =>
+      buildSubmissionEmail({
+        jobTitle: job.name!,
+        jobNumber: job.jobNumber,
+        submittedBy: "QA only",
+        formData: job.formData as FormData,
+        template: { id: template.id, name: template.name, version: 1, fields },
+        photos: job.photos as unknown as PhotoMetadata[],
+      });
     const emailHtml = makeEmail(reopened);
     expect(emailHtml).toContain(REINSPECTION_LABEL);
     expect(emailHtml).toContain("REINSPECTION_DATABASE_FINDING");
@@ -143,40 +190,294 @@ describe.skipIf(!enabled)("Q109 with the real isolated database", () => {
       writeFileSync(join(proofDir, "q109-real-database-email.html"), emailHtml);
     }
 
-    expect(await summary.saveSummaryItems(jobId, [...reinspect].reverse(), REINSPECTION_FIELD_ID)).toEqual({ success: true });
+    expect(
+      await summary.saveSummaryItems(
+        jobId,
+        [...reinspect].reverse(),
+        REINSPECTION_FIELD_ID,
+      ),
+    ).toEqual({ success: true });
     reopened = await db.job.findUniqueOrThrow({ where: { id: jobId } });
-    expect((reopened.formData as FormData)[RESERVED_REINSPECTION_SUMMARY_KEY]).toEqual([...reinspect].reverse());
-    expect((reopened.formData as FormData)[RESERVED_SUMMARY_KEY]).toEqual(original);
+    expect(
+      (reopened.formData as FormData)[RESERVED_REINSPECTION_SUMMARY_KEY],
+    ).toEqual([...reinspect].reverse());
+    expect((reopened.formData as FormData)[RESERVED_SUMMARY_KEY]).toEqual(
+      original,
+    );
 
-    expect((await summary.saveSummaryItems(jobId, [{ text: "foreign", photos: ["https://example.invalid/foreign.jpg"] }], REINSPECTION_FIELD_ID)).success).toBe(false);
+    expect(
+      (
+        await summary.saveSummaryItems(
+          jobId,
+          [
+            {
+              text: "foreign",
+              photos: ["https://example.invalid/foreign.jpg"],
+            },
+          ],
+          REINSPECTION_FIELD_ID,
+        )
+      ).success,
+    ).toBe(false);
     await photos.setPhotoIncludedInPdf(jobId, secondPhoto, false);
-    expect(await summary.saveSummaryItems(jobId, [{ text: "", photos: [secondPhoto] }], REINSPECTION_FIELD_ID)).toEqual({ success: true });
+    expect(
+      await summary.saveSummaryItems(
+        jobId,
+        [{ text: "", photos: [secondPhoto] }],
+        REINSPECTION_FIELD_ID,
+      ),
+    ).toEqual({ success: true });
     const excludedPdf = await pdf.generateJobPdf(jobId);
     expect(excludedPdf.success).toBe(true);
-    expect(Buffer.from(excludedPdf.data!.split(",")[1], "base64").toString("latin1")).not.toContain(REINSPECTION_LABEL);
+    expect(
+      Buffer.from(excludedPdf.data!.split(",")[1], "base64").toString("latin1"),
+    ).not.toContain(REINSPECTION_LABEL);
     await photos.setPhotoIncludedInPdf(jobId, secondPhoto, true);
     const photoOnlyPdf = await pdf.generateJobPdf(jobId);
     expect(photoOnlyPdf.success).toBe(true);
-    expect(Buffer.from(photoOnlyPdf.data!.split(",")[1], "base64").toString("latin1")).toContain(REINSPECTION_LABEL);
+    expect(
+      Buffer.from(photoOnlyPdf.data!.split(",")[1], "base64").toString(
+        "latin1",
+      ),
+    ).toContain(REINSPECTION_LABEL);
 
-    expect(await summary.saveSummaryItems(jobId, reinspect, REINSPECTION_FIELD_ID)).toEqual({ success: true });
+    expect(
+      await summary.saveSummaryItems(jobId, reinspect, REINSPECTION_FIELD_ID),
+    ).toEqual({ success: true });
     await photos.deletePhoto(jobId, secondPhoto);
     reopened = await db.job.findUniqueOrThrow({ where: { id: jobId } });
-    expect((reopened.formData as FormData)[RESERVED_REINSPECTION_SUMMARY_KEY]).toEqual(reinspect.map((item) => ({ ...item, photos: [] })));
-    expect((reopened.formData as FormData)[RESERVED_SUMMARY_KEY]).toEqual(original);
-    expect((reopened.photos as unknown as PhotoMetadata[]).map((photo) => photo.url)).toEqual([firstPhoto]);
+    expect(
+      (reopened.formData as FormData)[RESERVED_REINSPECTION_SUMMARY_KEY],
+    ).toEqual(reinspect.map((item) => ({ ...item, photos: [] })));
+    expect((reopened.formData as FormData)[RESERVED_SUMMARY_KEY]).toEqual(
+      original,
+    );
+    expect(
+      (reopened.photos as unknown as PhotoMetadata[]).map((photo) => photo.url),
+    ).toEqual([firstPhoto]);
 
-    expect(await summary.saveSummaryItems(jobId, [], REINSPECTION_FIELD_ID)).toEqual({ success: true });
+    expect(
+      await summary.saveSummaryItems(jobId, [], REINSPECTION_FIELD_ID),
+    ).toEqual({ success: true });
     reopened = await db.job.findUniqueOrThrow({ where: { id: jobId } });
-    expect(reopened.formData).not.toHaveProperty(RESERVED_REINSPECTION_SUMMARY_KEY);
-    expect((reopened.formData as FormData)[RESERVED_SUMMARY_KEY]).toEqual(original);
+    expect(reopened.formData).not.toHaveProperty(
+      RESERVED_REINSPECTION_SUMMARY_KEY,
+    );
+    expect((reopened.formData as FormData)[RESERVED_SUMMARY_KEY]).toEqual(
+      original,
+    );
     const blankPdf = await pdf.generateJobPdf(jobId);
     expect(blankPdf.success).toBe(true);
-    expect(Buffer.from(blankPdf.data!.split(",")[1], "base64").toString("latin1")).not.toContain(REINSPECTION_LABEL);
+    expect(
+      Buffer.from(blankPdf.data!.split(",")[1], "base64").toString("latin1"),
+    ).not.toContain(REINSPECTION_LABEL);
     expect(makeEmail(reopened)).not.toContain(REINSPECTION_LABEL);
 
-    await db.job.update({ where: { id: jobId }, data: { status: "SUBMITTED" } });
-    expect((await summary.saveSummaryItems(jobId, reinspect, REINSPECTION_FIELD_ID)).success).toBe(false);
+    // A delayed Blob cleanup must not overwrite a newer successful save.
+    await db.job.update({
+      where: { id: jobId },
+      data: { photos: fixturePhotos },
+    });
+    await summary.saveSummaryItems(jobId, reinspect, REINSPECTION_FIELD_ID);
+    let finishCleanup!: () => void;
+    let cleanupStarted!: () => void;
+    const reachedCleanup = new Promise<void>((resolve) => {
+      cleanupStarted = resolve;
+    });
+    const cleanupGate = new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    });
+    deleteBlob.mockImplementationOnce(async () => {
+      cleanupStarted();
+      await cleanupGate;
+    });
+    const deletion = photos.deletePhoto(jobId, secondPhoto);
+    await Promise.race([
+      reachedCleanup,
+      deletion.then(() => {
+        throw new Error("Deletion finished without reaching Blob cleanup");
+      }),
+    ]);
+    try {
+      expect(
+        await summary.saveSummaryItems(
+          jobId,
+          [{ text: "NEWER_SAVED_NOTES", photos: [] }],
+          REINSPECTION_FIELD_ID,
+        ),
+      ).toEqual({ success: true });
+    } finally {
+      finishCleanup();
+    }
+    await deletion;
+    expect(
+      (await db.job.findUniqueOrThrow({ where: { id: jobId } })).formData,
+    ).toMatchObject({
+      [RESERVED_REINSPECTION_SUMMARY_KEY]: [
+        { text: "NEWER_SAVED_NOTES", photos: [] },
+      ],
+    });
+
+    // Force deletion between a summary's ownership read and its UPDATE.
+    await db.job.update({
+      where: { id: jobId },
+      data: { photos: fixturePhotos },
+    });
+    const findUnique = db.job.findUnique.bind(db.job);
+    const staleRead = vi
+      .spyOn(db.job, "findUnique")
+      .mockImplementationOnce((async (
+        args: Parameters<typeof db.job.findUnique>[0],
+      ) => {
+        const snapshot = await findUnique(args);
+        await photos.deletePhoto(jobId, secondPhoto);
+        return snapshot;
+      }) as never);
+    try {
+      expect(
+        (
+          await summary.saveSummaryItems(
+            jobId,
+            reinspect,
+            REINSPECTION_FIELD_ID,
+          )
+        ).success,
+      ).toBe(false);
+    } finally {
+      staleRead.mockRestore();
+    }
+    reopened = await db.job.findUniqueOrThrow({ where: { id: jobId } });
+    expect(
+      JSON.stringify(
+        (reopened.formData as FormData)[RESERVED_REINSPECTION_SUMMARY_KEY],
+      ),
+    ).not.toContain(secondPhoto);
+
+    // Photo-assignment snapshots must reject the same deleted-reference race.
+    await db.job.update({
+      where: { id: jobId },
+      data: { photos: fixturePhotos },
+    });
+    const { assignAdditionalPhotos } =
+      await import("@/lib/actions/photo-assignments");
+    const assignmentRead = vi
+      .spyOn(db.job, "findUnique")
+      .mockImplementationOnce((async (
+        args: Parameters<typeof db.job.findUnique>[0],
+      ) => {
+        const snapshot = await findUnique(args);
+        await photos.deletePhoto(jobId, secondPhoto);
+        return snapshot;
+      }) as never);
+    try {
+      expect((await assignAdditionalPhotos(jobId, [secondPhoto])).success).toBe(
+        false,
+      );
+    } finally {
+      assignmentRead.mockRestore();
+    }
+
+    // Concurrent assignment writers must not replace one another's map.
+    await db.job.update({
+      where: { id: jobId },
+      data: { photos: fixturePhotos },
+    });
+    const { assignMultiFieldPhotos } =
+      await import("@/lib/actions/photo-assignments");
+    const { getMultiPhotoCap, RESERVED_PHOTO_MAP_KEY } =
+      await import("@/lib/multi-photo");
+    const multiField = fields.find(
+      (field) => getMultiPhotoCap(field.id) !== undefined,
+    )!;
+    expect(multiField).toBeTruthy();
+    const competingAssignment = vi
+      .spyOn(db.job, "findUnique")
+      .mockImplementationOnce((async (
+        args: Parameters<typeof db.job.findUnique>[0],
+      ) => {
+        const snapshot = await findUnique(args);
+        expect(
+          await assignMultiFieldPhotos(jobId, multiField.id, [firstPhoto]),
+        ).toEqual({ success: true });
+        return snapshot;
+      }) as never);
+    try {
+      expect((await assignAdditionalPhotos(jobId, [secondPhoto])).success).toBe(
+        false,
+      );
+    } finally {
+      competingAssignment.mockRestore();
+    }
+    reopened = await db.job.findUniqueOrThrow({ where: { id: jobId } });
+    expect(
+      (reopened.formData as FormData)[RESERVED_PHOTO_MAP_KEY],
+    ).toMatchObject({
+      [multiField.id]: [firstPhoto],
+    });
+
+    // A successfully saved change during email-settings lookup must appear in
+    // the sealed record, the real generated PDF, and mocked delivery HTML.
+    await forms.saveFormData(
+      jobId,
+      Object.fromEntries(
+        fields.map((field) => [
+          field.id,
+          field.required
+            ? field.type === "checkbox"
+              ? true
+              : "QA verification"
+            : "",
+        ]),
+      ) as FormData,
+    );
+    expect(
+      (
+        (await db.job.findUniqueOrThrow({ where: { id: jobId } }))
+          .formData as FormData
+      )[multiField.id],
+    ).toBe(firstPhoto);
+    recipientEmail.mockImplementationOnce(async () => {
+      expect(
+        await summary.saveSummaryItems(
+          jobId,
+          [{ text: "LATEST_SUBMISSION_NOTES", photos: [] }],
+          REINSPECTION_FIELD_ID,
+        ),
+      ).toEqual({ success: true });
+      return "qa@example.invalid";
+    });
+    const { submitJob } = await import("@/lib/actions/submit");
+    expect(await submitJob(jobId, "QA only")).toMatchObject({
+      success: true,
+      emailSent: true,
+    });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(sendEmail).mock.calls[0][0] as unknown as {
+      html: string;
+      attachments: { content: string }[];
+    };
+    expect(sent.html).toContain("LATEST_SUBMISSION_NOTES");
+    expect(sent.html).not.toContain("NEWER_SAVED_NOTES");
+    expect(
+      Buffer.from(sent.attachments[0].content, "base64").toString("latin1"),
+    ).toContain("LATEST_SUBMISSION_NOTES");
+    expect(
+      (await summary.saveSummaryItems(jobId, reinspect, REINSPECTION_FIELD_ID))
+        .success,
+    ).toBe(false);
+    await expect(photos.deletePhoto(jobId, firstPhoto)).rejects.toThrow(
+      /submitted/,
+    );
+    await expect(
+      photos.setPhotoIncludedInPdf(jobId, firstPhoto, false),
+    ).rejects.toThrow(/submitted/);
+    await db.job.update({ where: { id: jobId }, data: { status: "ARCHIVED" } });
+    await expect(photos.deletePhoto(jobId, firstPhoto)).rejects.toThrow(
+      /archived/,
+    );
+    await expect(
+      photos.setPhotoIncludedInPdf(jobId, firstPhoto, false),
+    ).rejects.toThrow(/archived/);
     expect(await otherJobsDigest()).toBe(baselineDigest);
-  }, 90_000);
+  }, 150_000);
 });

@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2, Loader2, FileText, FileX } from "lucide-react";
 import { toast } from "sonner";
 import { deletePhoto, setPhotoIncludedInPdf } from "@/lib/actions/photos";
 import { PhotoLightbox } from "@/components/photo-lightbox";
 import type { PhotoMetadata } from "@/lib/photos";
+import { useJobSaveHandler, useJobSaves } from "@/components/job-save-provider";
 
 // Treat undefined and true identically as "included" — preserves pre-feature
 // behavior for legacy photos written before the includedInPdf field existed.
@@ -32,49 +33,109 @@ export function PhotoGallery({
 }) {
   const showPdfToggle = allowPdfInclusionToggle ?? !readOnly;
   const router = useRouter();
+  const { isSaving } = useJobSaves();
   const [selectedPhoto, setSelectedPhoto] = useState<PhotoMetadata | null>(
     null,
   );
   const [deletingUrl, setDeletingUrl] = useState<string | null>(null);
   const [togglingUrl, setTogglingUrl] = useState<string | null>(null);
+  const pendingOperation = useRef<Promise<void> | null>(null);
+  const failedOperations = useRef(new Map<string, string>());
+  const [operationErrors, setOperationErrors] = useState<string[]>([]);
 
-  async function handleDelete(photo: PhotoMetadata) {
-    setDeletingUrl(photo.url);
-    try {
-      await deletePhoto(jobId, photo.url);
-      toast.success("Photo deleted");
-      router.refresh();
-    } catch {
-      toast.error("Failed to delete photo");
-    } finally {
-      setDeletingUrl(null);
+  const waitForPhotoChanges = useCallback(async () => {
+    await pendingOperation.current;
+    if (failedOperations.current.size > 0) {
+      throw new Error(
+        "A photo change failed. Retry it or dismiss the error before saving.",
+      );
     }
+  }, []);
+  useJobSaveHandler("photo-gallery", waitForPhotoChanges, "prepare");
+
+  function runPhotoChange(
+    key: string,
+    operation: () => Promise<void>,
+    errorMessage: string,
+  ) {
+    pendingOperation.current = Promise.resolve()
+      .then(operation)
+      .then(() => {
+        failedOperations.current.delete(key);
+      })
+      .catch(() => {
+        failedOperations.current.set(key, errorMessage);
+        toast.error(errorMessage);
+      })
+      .finally(() => {
+        setOperationErrors([...failedOperations.current.values()]);
+        setDeletingUrl(null);
+        setTogglingUrl(null);
+        pendingOperation.current = null;
+      });
   }
 
-  async function handleTogglePdf(photo: PhotoMetadata) {
+  function handleDelete(photo: PhotoMetadata) {
+    if (isSaving || pendingOperation.current) return;
+    setDeletingUrl(photo.url);
+    runPhotoChange(
+      `delete:${photo.url}`,
+      async () => {
+        const result = await deletePhoto(jobId, photo.url);
+        if (result?.blobCleanupPending) {
+          toast.warning(
+            "Photo removed from the job; stored file cleanup could not finish.",
+          );
+        } else {
+          toast.success("Photo deleted");
+        }
+        failedOperations.current.delete(`toggle:${photo.url}`);
+        router.refresh();
+      },
+      "Failed to delete photo",
+    );
+  }
+
+  function handleTogglePdf(photo: PhotoMetadata) {
+    if (isSaving || pendingOperation.current) return;
     const next = !isIncludedInPdf(photo);
     setTogglingUrl(photo.url);
-    try {
-      await setPhotoIncludedInPdf(jobId, photo.url, next);
-      toast.success(next ? "Photo included in PDF" : "Photo excluded from PDF");
-      router.refresh();
-    } catch {
-      toast.error("Failed to update PDF inclusion");
-    } finally {
-      setTogglingUrl(null);
-    }
-  }
-
-  if (photos.length === 0) {
-    return (
-      <p className="text-base text-zinc-500">
-        No photos yet. Take a photo or add from your library.
-      </p>
+    runPhotoChange(
+      `toggle:${photo.url}`,
+      async () => {
+        await setPhotoIncludedInPdf(jobId, photo.url, next);
+        toast.success(
+          next ? "Photo included in PDF" : "Photo excluded from PDF",
+        );
+        router.refresh();
+      },
+      "Failed to update PDF inclusion",
     );
   }
 
   return (
     <>
+      {operationErrors.length > 0 && (
+        <div role="alert" className="mb-3 text-sm text-red-600">
+          <p>{operationErrors.join(". ")}. Retry the change or dismiss it.</p>
+          <button
+            type="button"
+            disabled={isSaving || !!deletingUrl || !!togglingUrl}
+            className="mt-1 min-h-11 underline"
+            onClick={() => {
+              failedOperations.current.clear();
+              setOperationErrors([]);
+            }}
+          >
+            Dismiss failed photo change
+          </button>
+        </div>
+      )}
+      {photos.length === 0 && (
+        <p className="text-base text-zinc-500">
+          No photos yet. Take a photo or add from your library.
+        </p>
+      )}
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
         {photos.map((photo) => {
           const included = isIncludedInPdf(photo);
@@ -111,7 +172,7 @@ export function PhotoGallery({
                       ? `Exclude ${photo.filename} from PDF`
                       : `Include ${photo.filename} in PDF`
                   }
-                  disabled={toggling}
+                  disabled={isSaving || !!deletingUrl || !!togglingUrl}
                   onClick={() => handleTogglePdf(photo)}
                   className="absolute top-1 left-1 flex min-h-[36px] min-w-[36px] items-center justify-center rounded-full bg-black/60 p-1.5 text-white opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 disabled:opacity-60"
                 >
@@ -130,7 +191,7 @@ export function PhotoGallery({
               {!readOnly && (
                 <button
                   type="button"
-                  disabled={deletingUrl === photo.url}
+                  disabled={isSaving || !!deletingUrl || !!togglingUrl}
                   onClick={() => handleDelete(photo)}
                   className="absolute top-1 right-1 flex min-h-[36px] min-w-[36px] items-center justify-center rounded-full bg-black/60 p-1.5 text-white opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
                 >

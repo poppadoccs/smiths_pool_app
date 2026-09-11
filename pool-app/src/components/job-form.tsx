@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   useForm,
   Controller,
@@ -10,7 +10,6 @@ import {
 } from "react-hook-form";
 import imageCompression from "browser-image-compression";
 import { COMPRESSION_OPTIONS } from "@/lib/photos";
-import { savePhotoMetadata } from "@/lib/actions/photos";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -40,6 +39,13 @@ import { SummaryItemsEditor } from "@/components/summary-items-editor";
 import { isSummaryFieldId } from "@/lib/summary";
 import { saveFormData } from "@/lib/actions/forms";
 import { StickyFormNav } from "@/components/sticky-form-nav";
+import { useJobSaveHandler, useJobSaves } from "@/components/job-save-provider";
+import {
+  clearFormDraft,
+  formFieldsOnly,
+  loadFormDraft,
+  saveFormDraft,
+} from "@/lib/form-draft";
 import { ImportFromPaper } from "@/components/import-from-paper";
 import { RemarksPhotosField } from "@/components/remarks-photos-field";
 import { MultiPhotoField } from "@/components/multi-photo-field";
@@ -49,39 +55,7 @@ import {
 } from "@/lib/multi-photo";
 import type { PhotoMetadata } from "@/lib/photos";
 
-// --- localStorage draft helpers ---
-
-const DRAFT_KEY = (jobId: string) => `form-draft-${jobId}`;
-
-function loadDraft(jobId: string): JobFormData | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(DRAFT_KEY(jobId));
-    if (!raw) return null;
-    return JSON.parse(raw).data;
-  } catch {
-    return null;
-  }
-}
-
-function saveDraftToStorage(jobId: string, data: JobFormData) {
-  try {
-    localStorage.setItem(
-      DRAFT_KEY(jobId),
-      JSON.stringify({ data, savedAt: Date.now() }),
-    );
-  } catch {
-    // localStorage full or unavailable — silent fail, DB save is backup
-  }
-}
-
-export function clearDraft(jobId: string) {
-  try {
-    localStorage.removeItem(DRAFT_KEY(jobId));
-  } catch {
-    // ignore
-  }
-}
+export { clearDraft } from "@/lib/form-draft";
 
 // --- Main form component ---
 
@@ -104,6 +78,7 @@ export function JobForm({
   jobPhotos?: PhotoMetadata[];
   disabled?: boolean;
 }) {
+  const { isSaving, registerFormUpdater } = useJobSaves();
   const schema = useMemo(() => buildFormSchema(template), [template]);
   const defaults = useMemo(() => {
     // Layer server data over template defaults so fields added to the
@@ -113,6 +88,24 @@ export function JobForm({
     const base = getDefaultValues(template);
     return initialData ? { ...base, ...initialData } : base;
   }, [template, initialData]);
+  const serverPhotoValues = useMemo<Record<string, string>>(
+    () =>
+      Object.fromEntries(
+        template.fields
+          .filter(
+            (field) =>
+              field.type === "photo" &&
+              !MULTI_PHOTO_FIELD_IDS.has(field.id) &&
+              field.id !== ADDITIONAL_PHOTOS_FIELD_ID,
+          )
+          .map((field) => {
+            const value = initialData?.[field.id];
+            return [field.id, typeof value === "string" ? value : ""] as const;
+          }),
+      ),
+    [template, initialData],
+  );
+  const previousServerPhotoValues = useRef(serverPhotoValues);
 
   const {
     register,
@@ -128,21 +121,75 @@ export function JobForm({
     defaultValues: defaults,
   });
 
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">(
-    "idle",
+  useEffect(
+    () =>
+      registerFormUpdater((values) => {
+        for (const [id, value] of Object.entries(values)) {
+          setValue(id, value, { shouldDirty: true });
+        }
+      }),
+    [registerFormUpdater, setValue],
   );
+
+  useEffect(() => {
+    const previous = previousServerPhotoValues.current;
+    previousServerPhotoValues.current = serverPhotoValues;
+    for (const [id, value] of Object.entries(serverPhotoValues)) {
+      const priorValue = previous[id] ?? "";
+      // A gallery deletion or assignment can change the server's legacy
+      // mirror. Accept it only while RHF still has that server snapshot;
+      // a newer upload and unrelated unsaved answers must remain intact.
+      if (value !== priorValue && getValues(id) === priorValue) {
+        setValue(id, value, { shouldDirty: false });
+      }
+    }
+  }, [serverPhotoValues, getValues, setValue]);
+
+  const [saveStatus, setSaveStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
   const dbSaveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const savedTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+
+  const saveLatestForm = useCallback(() => {
+    clearTimeout(dbSaveTimer.current);
+    clearTimeout(savedTimer.current);
+    const pending = saveQueue.current.then(async () => {
+      // Read after earlier autosaves settle, so an older write cannot land
+      // after the explicit Save/Submit snapshot.
+      const values = formFieldsOnly(getValues() as JobFormData);
+      setSaveStatus("saving");
+      try {
+        await saveFormData(jobId, values);
+        clearFormDraft(jobId, values);
+        setSaveStatus("saved");
+        savedTimer.current = setTimeout(() => setSaveStatus("idle"), 2000);
+      } catch (error) {
+        setSaveStatus("error");
+        throw error;
+      }
+    });
+    // Background failures remain retryable. The caller still receives the
+    // rejecting promise, allowing Save/Submit to report and block on it.
+    saveQueue.current = pending.catch(() => undefined);
+    return pending;
+  }, [getValues, jobId]);
+
+  useJobSaveHandler("form", saveLatestForm);
 
   // Restore draft from localStorage on mount (client-only, skip if disabled)
   useEffect(() => {
     if (disabled) return;
-    const draft = loadDraft(jobId);
+    const draft = loadFormDraft(jobId);
     if (draft) {
       // Same layering as `defaults`: a draft saved before a template change
       // may lack newer field keys — never let those go uncontrolled.
-      reset({ ...getDefaultValues(template), ...draft });
+      const restored = { ...defaults, ...draft };
+      reset(restored);
+      saveFormDraft(jobId, restored);
       toast.info("Draft restored");
+      void saveLatestForm().catch(() => undefined);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, disabled]);
@@ -151,20 +198,13 @@ export function JobForm({
   useEffect(() => {
     if (disabled) return;
     const subscription = watch((values) => {
-      saveDraftToStorage(jobId, values as JobFormData);
+      saveFormDraft(jobId, values as JobFormData);
 
       clearTimeout(dbSaveTimer.current);
       clearTimeout(savedTimer.current);
-      dbSaveTimer.current = setTimeout(async () => {
-        setSaveStatus("saving");
-        try {
-          await saveFormData(jobId, values as JobFormData);
-          clearDraft(jobId);
-          setSaveStatus("saved");
-          savedTimer.current = setTimeout(() => setSaveStatus("idle"), 2000);
-        } catch {
-          setSaveStatus("idle");
-        }
+      setSaveStatus("idle");
+      dbSaveTimer.current = setTimeout(() => {
+        void saveLatestForm().catch(() => undefined);
       }, 2000);
     });
     return () => {
@@ -172,7 +212,7 @@ export function JobForm({
       clearTimeout(dbSaveTimer.current);
       clearTimeout(savedTimer.current);
     };
-  }, [watch, jobId, disabled]);
+  }, [watch, jobId, disabled, saveLatestForm]);
 
   function handleImport(extracted: Record<string, string | boolean>) {
     // Use setValue per field so the watch() subscription fires and auto-save triggers.
@@ -187,7 +227,11 @@ export function JobForm({
   }
 
   return (
-    <div className="space-y-5">
+    <fieldset
+      className="min-w-0 space-y-5"
+      disabled={isSaving}
+      aria-busy={isSaving}
+    >
       {/* Import from paper — only on draft forms */}
       {!disabled && (
         <ImportFromPaper fields={template.fields} onApply={handleImport} />
@@ -205,7 +249,12 @@ export function JobForm({
           {saveStatus === "saved" && (
             <span className="flex items-center gap-1.5 text-green-600">
               <Check className="size-3.5" />
-              Saved
+              Form fields saved
+            </span>
+          )}
+          {saveStatus === "error" && (
+            <span role="status" className="text-red-600">
+              Form fields not saved. Use Save to retry.
             </span>
           )}
         </div>
@@ -243,7 +292,7 @@ export function JobForm({
                 register={register}
                 control={control}
                 errors={errors}
-                disabled={disabled}
+                disabled={disabled || isSaving}
                 setCompanionValue={setCompanionValue}
               />
             ) : (
@@ -263,12 +312,8 @@ export function JobForm({
         );
       })}
 
-      <StickyFormNav
-        jobId={jobId}
-        getValues={() => getValues() as JobFormData}
-        disabled={disabled}
-      />
-    </div>
+      <StickyFormNav disabled={disabled} />
+    </fieldset>
   );
 }
 
@@ -288,6 +333,15 @@ function PhotoFieldInput({
   jobId: string;
 }) {
   const [uploading, setUploading] = useState(false);
+  const [uploadFailure, setUploadFailure] = useState<string | null>(null);
+  const pendingUpload = useRef<Promise<void> | null>(null);
+  const failedUpload = useRef<Error | null>(null);
+  const { isSaving } = useJobSaves();
+  const waitForUpload = useCallback(async () => {
+    if (pendingUpload.current) await pendingUpload.current;
+    if (failedUpload.current) throw failedUpload.current;
+  }, []);
+  useJobSaveHandler(`legacy-photo:${field.id}`, waitForUpload, "prepare");
   const error = errors[field.id]?.message as string | undefined;
   const fieldId = `field-${field.id}`;
 
@@ -322,48 +376,77 @@ function PhotoFieldInput({
                 </>
               )}
               <input
+                id={fieldId}
                 type="file"
                 accept="image/*"
-                disabled={disabled || uploading}
+                disabled={disabled || uploading || isSaving}
                 className="sr-only"
-                onChange={async (e) => {
+                onChange={(e) => {
                   const file = e.target.files?.[0];
-                  if (!file) return;
+                  if (!file || isSaving || pendingUpload.current) return;
                   setUploading(true);
-                  try {
-                    const compressed = await imageCompression(
-                      file,
-                      COMPRESSION_OPTIONS,
-                    );
-                    const fd = new FormData();
-                    fd.append("file", compressed);
-                    fd.append(
-                      "filename",
-                      file.name.replace(/[^a-zA-Z0-9._-]/g, "_"),
-                    );
-                    const resp = await fetch("/api/photos/upload", {
-                      method: "POST",
-                      body: fd,
+                  failedUpload.current = null;
+                  setUploadFailure(null);
+                  const pending = (async () => {
+                    try {
+                      const compressed = await imageCompression(
+                        file,
+                        COMPRESSION_OPTIONS,
+                      );
+                      const fd = new FormData();
+                      fd.append("file", compressed);
+                      fd.append("jobId", jobId);
+                      fd.append("originalFilename", file.name);
+                      fd.append(
+                        "filename",
+                        file.name.replace(/[^a-zA-Z0-9._-]/g, "_"),
+                      );
+                      const resp = await fetch("/api/photos/upload", {
+                        method: "POST",
+                        body: fd,
+                      });
+                      if (!resp.ok) throw new Error("Upload failed");
+                      const { url } = await resp.json();
+                      // The upload route returns only after metadata is saved.
+                      rhf.onChange(url);
+                    } catch (err) {
+                      const failure = new Error(
+                        `Photo upload failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+                      );
+                      failedUpload.current = failure;
+                      setUploadFailure(failure.message);
+                      toast.error(failure.message);
+                      throw failure;
+                    } finally {
+                      setUploading(false);
+                    }
+                  })();
+                  pendingUpload.current = pending;
+                  void pending
+                    .catch(() => undefined)
+                    .finally(() => {
+                      if (pendingUpload.current === pending)
+                        pendingUpload.current = null;
                     });
-                    if (!resp.ok) throw new Error("Upload failed");
-                    const { url } = await resp.json();
-                    await savePhotoMetadata(jobId, {
-                      url,
-                      filename: file.name,
-                      size: compressed.size,
-                    });
-                    // Only mark field populated after metadata is confirmed saved
-                    rhf.onChange(url);
-                  } catch (err) {
-                    toast.error(
-                      `Photo upload failed: ${err instanceof Error ? err.message : "Unknown error"}`,
-                    );
-                  } finally {
-                    setUploading(false);
-                  }
                 }}
               />
             </label>
+          )}
+          {uploadFailure && (
+            <div className="space-y-2 text-sm text-red-600" role="alert">
+              <p>{uploadFailure}</p>
+              <button
+                type="button"
+                className="min-h-[44px] underline"
+                disabled={isSaving}
+                onClick={() => {
+                  failedUpload.current = null;
+                  setUploadFailure(null);
+                }}
+              >
+                Continue without this photo
+              </button>
+            </div>
           )}
           {error && <p className="text-sm text-red-600">{error}</p>}
         </div>
@@ -529,6 +612,8 @@ function FieldRenderer({
   serverFormData: JobFormData | null;
   setCompanionValue: (key: string, value: string) => void;
 }) {
+  const { isSaving } = useJobSaves();
+  const controlsDisabled = disabled || isSaving;
   const error = errors[field.id]?.message as string | undefined;
   const fieldId = `field-${field.id}`;
 
@@ -559,7 +644,7 @@ function FieldRenderer({
             placeholder={field.placeholder}
             className="min-h-[48px] text-base"
             aria-invalid={!!error}
-            disabled={disabled}
+            disabled={controlsDisabled}
             {...register(field.id)}
           />
           {error && <p className="text-sm text-red-600">{error}</p>}
@@ -579,7 +664,7 @@ function FieldRenderer({
             placeholder={field.placeholder || "Type name as signature"}
             className="min-h-[48px] text-base italic"
             aria-invalid={!!error}
-            disabled={disabled}
+            disabled={controlsDisabled}
             {...register(field.id)}
           />
           {error && <p className="text-sm text-red-600">{error}</p>}
@@ -613,7 +698,7 @@ function FieldRenderer({
             placeholder={field.placeholder}
             className="min-h-[96px] text-base"
             aria-invalid={!!error}
-            disabled={disabled}
+            disabled={controlsDisabled}
             {...register(field.id)}
           />
           {error && <p className="text-sm text-red-600">{error}</p>}
@@ -627,7 +712,7 @@ function FieldRenderer({
             textareaFieldId={field.id}
             jobPhotos={jobPhotos}
             formData={serverFormData}
-            disabled={disabled}
+            disabled={controlsDisabled}
           />
         </div>
       );
@@ -641,7 +726,7 @@ function FieldRenderer({
             <label
               className="-mx-2 flex min-h-[56px] cursor-pointer items-center gap-3 rounded-lg px-2 active:bg-zinc-50"
               onClick={(e) => {
-                if (disabled) return;
+                if (controlsDisabled) return;
                 if ((e.target as HTMLElement).closest('[data-slot="checkbox"]'))
                   return;
                 e.preventDefault();
@@ -653,7 +738,7 @@ function FieldRenderer({
                 checked={rhf.value as boolean}
                 onCheckedChange={(checked) => rhf.onChange(checked)}
                 className="size-7"
-                disabled={disabled}
+                disabled={controlsDisabled}
               />
               <span className="text-base select-none">{field.label}</span>
             </label>
@@ -677,7 +762,7 @@ function FieldRenderer({
               <Select
                 value={rhf.value as string}
                 onValueChange={(val) => rhf.onChange(val)}
-                disabled={disabled}
+                disabled={controlsDisabled}
               >
                 <SelectTrigger className="min-h-[48px] w-full text-base">
                   <SelectValue placeholder="Select..." />
@@ -736,7 +821,7 @@ function FieldRenderer({
                           setCompanionValue(otherTextKey(field.id), "");
                         }
                       }}
-                      disabled={disabled}
+                      disabled={controlsDisabled}
                       className="size-6 accent-zinc-900"
                     />
                     <span className="text-base">{opt}</span>
@@ -748,7 +833,7 @@ function FieldRenderer({
                   aria-label={`${field.label} — details`}
                   placeholder="Please specify..."
                   className="min-h-[48px] text-base"
-                  disabled={disabled}
+                  disabled={controlsDisabled}
                   {...register(otherTextKey(field.id))}
                 />
               )}
@@ -783,7 +868,7 @@ function FieldRenderer({
           field={field}
           control={control}
           errors={errors}
-          disabled={disabled}
+          disabled={controlsDisabled}
           jobId={jobId}
         />
       );

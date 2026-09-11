@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useCallback, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import {
 } from "@/lib/multi-photo";
 import type { FormData as JobFormData } from "@/lib/forms";
 import type { PhotoMetadata } from "@/lib/photos";
+import { useJobSaveHandler, useJobSaves } from "@/components/job-save-provider";
 
 // Companion photo section for a remarks textarea. Reads the current
 // assigned URLs from __photoAssignmentsByField via readFieldPhotoUrls,
@@ -34,6 +35,7 @@ export function RemarksPhotosField({
 }) {
   const ownerId = remarksPhotoOwnerIdFor(textareaFieldId);
   const router = useRouter();
+  const { isSaving } = useJobSaves();
   const [isPending, startTransition] = useTransition();
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   // Synchronous in-flight lock — see multi-photo-field.tsx for why a ref is
@@ -42,6 +44,18 @@ export function RemarksPhotosField({
   // React-state guard. The ref mutates synchronously so the second handler
   // sees the lock the first one just claimed.
   const lockRef = useRef(false);
+  const pendingOperation = useRef<Promise<void>>(Promise.resolve());
+  const failedOperation = useRef<Error | null>(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
+  const waitForPendingOperation = useCallback(async () => {
+    await pendingOperation.current;
+    if (failedOperation.current) throw failedOperation.current;
+  }, []);
+  useJobSaveHandler(
+    ownerId ? `remarks-photos:${ownerId}` : null,
+    waitForPendingOperation,
+    "prepare",
+  );
 
   // Defensive: only remarks textarea ids should render this component.
   // If a non-remarks id somehow reaches here, skip entirely so no random
@@ -53,28 +67,40 @@ export function RemarksPhotosField({
   const atCap = currentUrls.length >= REMARKS_PHOTO_CAP;
 
   function writeUrls(newUrls: string[]) {
-    startTransition(async () => {
-      try {
-        const res = await assignRemarksFieldPhotos(jobId, ownerId!, newUrls);
-        if (!res.success) {
-          toast.error(res.error ?? "Failed to update remarks photos");
-          return;
+    failedOperation.current = null;
+    setOperationError(null);
+    pendingOperation.current = new Promise<void>((resolve) => {
+      startTransition(async () => {
+        try {
+          const res = await assignRemarksFieldPhotos(jobId, ownerId!, newUrls);
+          if (!res.success) {
+            throw new Error(res.error ?? "Failed to update remarks photos");
+          }
+          router.refresh();
+        } catch (error) {
+          const failure =
+            error instanceof Error
+              ? error
+              : new Error("Failed to update remarks photos");
+          failedOperation.current = failure;
+          setOperationError(failure.message);
+          toast.error(failure.message);
+        } finally {
+          lockRef.current = false;
+          resolve();
         }
-        router.refresh();
-      } finally {
-        lockRef.current = false;
-      }
+      });
     });
   }
 
   function removePhoto(url: string) {
-    if (lockRef.current) return;
+    if (lockRef.current || disabled || isSaving) return;
     lockRef.current = true;
     writeUrls(currentUrls.filter((u) => u !== url));
   }
 
   function addPhoto(url: string) {
-    if (lockRef.current) return;
+    if (lockRef.current || disabled || isSaving) return;
     if (currentUrlSet.has(url)) return;
     if (atCap) return;
     lockRef.current = true;
@@ -105,7 +131,7 @@ export function RemarksPhotosField({
             variant="outline"
             size="sm"
             onClick={() => setIsPickerOpen((v) => !v)}
-            disabled={isPending}
+            disabled={isPending || isSaving}
           >
             {isPickerOpen ? "Done" : "Add"}
           </Button>
@@ -132,7 +158,7 @@ export function RemarksPhotosField({
                     type="button"
                     aria-label={`Remove ${meta?.filename ?? "photo"} from remarks`}
                     onClick={() => removePhoto(url)}
-                    disabled={isPending}
+                    disabled={isPending || isSaving}
                     className="absolute top-1 right-1 min-h-[28px] min-w-[28px] rounded-full bg-white/90 px-1 text-sm leading-none font-semibold text-red-600 shadow hover:bg-white disabled:opacity-60"
                   >
                     ×
@@ -141,6 +167,22 @@ export function RemarksPhotosField({
               </div>
             );
           })}
+        </div>
+      )}
+      {operationError && !disabled && (
+        <div role="alert" className="space-y-1 text-sm text-red-600">
+          <p>{operationError}</p>
+          <button
+            type="button"
+            disabled={isSaving}
+            className="min-h-[44px] underline"
+            onClick={() => {
+              failedOperation.current = null;
+              setOperationError(null);
+            }}
+          >
+            Keep current photos
+          </button>
         </div>
       )}
 
@@ -164,7 +206,7 @@ export function RemarksPhotosField({
                   type="button"
                   aria-label={`Attach ${p.filename} to this remarks section`}
                   onClick={() => addPhoto(p.url)}
-                  disabled={isPending || atCap}
+                  disabled={isPending || isSaving || atCap}
                   className="aspect-square overflow-hidden rounded-md border border-zinc-200 hover:opacity-80 disabled:opacity-40"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
