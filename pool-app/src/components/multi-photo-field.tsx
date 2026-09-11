@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useCallback, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Camera, ImagePlus, Loader2 } from "lucide-react";
@@ -11,7 +11,7 @@ import {
   assignAdditionalPhotos,
   assignMultiFieldPhotos,
 } from "@/lib/actions/photo-assignments";
-import { savePhotoMetadata } from "@/lib/actions/photos";
+import { useJobSaveHandler, useJobSaves } from "@/components/job-save-provider";
 import {
   ADDITIONAL_PHOTOS_CAP,
   ADDITIONAL_PHOTOS_FIELD_ID,
@@ -48,9 +48,11 @@ export function MultiPhotoField({
   disabled?: boolean;
 }) {
   const router = useRouter();
+  const { isSaving } = useJobSaves();
   const [isPending, startTransition] = useTransition();
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [operationError, setOperationError] = useState<string | null>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   // Synchronous in-flight lock. `isPending`/`isUploading` are render-closure
   // state — a second handler firing in the same tick reads the SAME stale
@@ -58,6 +60,18 @@ export function MultiPhotoField({
   // it. A ref mutates synchronously, so the second handler sees `true` the
   // moment the first one claims it. Released in the transition's `finally`.
   const lockRef = useRef(false);
+  const pendingOperation = useRef<Promise<void>>(Promise.resolve());
+  const failedOperation = useRef<Error | null>(null);
+
+  const waitForPendingOperation = useCallback(async () => {
+    await pendingOperation.current;
+    if (failedOperation.current) throw failedOperation.current;
+  }, []);
+  useJobSaveHandler(
+    `photo-field:${field.id}`,
+    waitForPendingOperation,
+    "prepare",
+  );
 
   const fieldId = field.id;
   const isQ108 = fieldId === ADDITIONAL_PHOTOS_FIELD_ID;
@@ -72,112 +86,108 @@ export function MultiPhotoField({
   const currentUrlSet = new Set(currentUrls);
   const atCap = currentUrls.length >= cap;
 
-  // Lock contract:
-  //   - Entry handlers (addPhoto, removePhoto, handleCapture) check the lock,
-  //     run their bail-fast checks, then claim the lock synchronously before
-  //     any await or state-scheduling call.
-  //   - writeUrls is the single transition starter and the single lock release
-  //     point for the gallery/remove paths (released in finally).
-  //   - handleCapture also releases on the upload-failure path before throwing
-  //     control out; on the success path it hands off to writeUrls which
-  //     releases when the assignment transition resolves.
-  function writeUrls(newUrls: string[]) {
-    startTransition(async () => {
-      try {
-        const res = isQ108
-          ? await assignAdditionalPhotos(jobId, newUrls)
-          : await assignMultiFieldPhotos(jobId, fieldId, newUrls);
-        if (!res.success) {
-          toast.error(res.error ?? "Failed to update photos");
-          return;
+  // Claim the lock synchronously and expose the full operation to Submit.
+  // A capture includes both registration and assignment before it resolves.
+  function runOperation(operation: () => Promise<void>) {
+    lockRef.current = true;
+    failedOperation.current = null;
+    setOperationError(null);
+    pendingOperation.current = new Promise<void>((resolve) => {
+      startTransition(async () => {
+        try {
+          await operation();
+        } catch (error) {
+          const failure =
+            error instanceof Error
+              ? error
+              : new Error("Failed to update photos");
+          failedOperation.current = failure;
+          setOperationError(failure.message);
+          toast.error(failure.message);
+        } finally {
+          lockRef.current = false;
+          resolve();
         }
-        router.refresh();
-      } finally {
-        lockRef.current = false;
-      }
+      });
     });
   }
 
+  async function writeUrls(newUrls: string[]) {
+    const res = isQ108
+      ? await assignAdditionalPhotos(jobId, newUrls)
+      : await assignMultiFieldPhotos(jobId, fieldId, newUrls);
+    if (!res.success) throw new Error(res.error ?? "Failed to update photos");
+    router.refresh();
+  }
+
   function removePhoto(url: string) {
-    if (lockRef.current) return;
-    lockRef.current = true;
-    writeUrls(currentUrls.filter((u) => u !== url));
+    if (disabled || isSaving || lockRef.current) return;
+    runOperation(() => writeUrls(currentUrls.filter((u) => u !== url)));
   }
 
   function addPhoto(url: string) {
-    if (lockRef.current) return;
+    if (disabled || isSaving || lockRef.current) return;
     if (currentUrlSet.has(url)) return;
     if (atCap) return;
-    lockRef.current = true;
-    writeUrls([...currentUrls, url]);
+    runOperation(() => writeUrls([...currentUrls, url]));
   }
 
-  async function handleCapture(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleCapture(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     // Reset immediately so the same file can be reselected after a failure.
     e.target.value = "";
     if (!file) return;
     // Synchronous lock check before any await — a queued second capture
     // event from the same render must not start a parallel upload+assign.
-    if (lockRef.current) return;
+    if (disabled || isSaving || lockRef.current) return;
     if (atCap) {
       toast.error(`At cap for ${field.label} (${cap})`);
       return;
     }
-    lockRef.current = true;
-    setIsUploading(true);
-    try {
-      // Mirror the compression + HEIC path from photo-upload.tsx. Kept
-      // inline (not factored) to stay within the narrow task scope.
-      let processedFile: File = file;
-      if (isHeicFile(file)) {
-        const heic2any = (await import("heic2any")).default;
-        const blob = await heic2any({
-          blob: file,
-          toType: "image/jpeg",
-          quality: 0.8,
-        });
-        const resultBlob = Array.isArray(blob) ? blob[0] : blob;
-        processedFile = new File(
-          [resultBlob],
-          file.name.replace(/\.(heic|heif)$/i, ".jpg"),
-          { type: "image/jpeg" },
+    runOperation(async () => {
+      setIsUploading(true);
+      try {
+        // Mirror the compression + HEIC path from photo-upload.tsx. Kept
+        // inline (not factored) to stay within the narrow task scope.
+        let processedFile: File = file;
+        if (isHeicFile(file)) {
+          const heic2any = (await import("heic2any")).default;
+          const blob = await heic2any({
+            blob: file,
+            toType: "image/jpeg",
+            quality: 0.8,
+          });
+          const resultBlob = Array.isArray(blob) ? blob[0] : blob;
+          processedFile = new File(
+            [resultBlob],
+            file.name.replace(/\.(heic|heif)$/i, ".jpg"),
+            { type: "image/jpeg" },
+          );
+        }
+        const compressed = await imageCompression(
+          processedFile,
+          COMPRESSION_OPTIONS,
         );
+        const fd = new FormData();
+        fd.append("file", compressed);
+        fd.append("jobId", jobId);
+        fd.append("originalFilename", file.name);
+        const resp = await fetch("/api/photos/upload", {
+          method: "POST",
+          body: fd,
+        });
+        if (!resp.ok) {
+          const error = await resp.json().catch(() => ({}));
+          throw new Error(error.error || "Photo upload failed");
+        }
+        const { url } = (await resp.json()) as { url: string };
+        // The route has already registered the photo on this job.
+        await writeUrls([...currentUrls, url]);
+      } finally {
+        setIsUploading(false);
+        router.refresh();
       }
-      const compressed = await imageCompression(
-        processedFile,
-        COMPRESSION_OPTIONS,
-      );
-      const fd = new FormData();
-      fd.append("file", compressed);
-      fd.append("filename", file.name.replace(/[^a-zA-Z0-9._-]/g, "_"));
-      const resp = await fetch("/api/photos/upload", {
-        method: "POST",
-        body: fd,
-      });
-      if (!resp.ok) throw new Error("Upload failed");
-      const { url } = (await resp.json()) as { url: string };
-      // Add to the job photo pool FIRST so the assignment action's
-      // ownership check (URL must be in job.photos) passes.
-      await savePhotoMetadata(jobId, {
-        url,
-        filename: file.name,
-        size: compressed.size,
-      });
-      writeUrls([...currentUrls, url]);
-    } catch (err) {
-      toast.error(
-        `Photo upload failed: ${
-          err instanceof Error ? err.message : "Unknown error"
-        }`,
-      );
-      // Release on the failure path — success path hands the lock off to
-      // writeUrls' transition `finally`. Without this, an upload error
-      // would leave the lock held until the page reloads.
-      lockRef.current = false;
-    } finally {
-      setIsUploading(false);
-    }
+    });
   }
 
   const availableToAdd = jobPhotos.filter((p) => !currentUrlSet.has(p.url));
@@ -216,7 +226,7 @@ export function MultiPhotoField({
                 variant="outline"
                 size="sm"
                 onClick={() => setIsPickerOpen((v) => !v)}
-                disabled={isPending || isUploading}
+                disabled={isPending || isUploading || isSaving}
               >
                 <ImagePlus className="mr-1 size-3.5" />
                 {isPickerOpen ? "Done" : "Add from gallery"}
@@ -226,7 +236,7 @@ export function MultiPhotoField({
                 variant="outline"
                 size="sm"
                 onClick={() => cameraInputRef.current?.click()}
-                disabled={isPending || isUploading || atCap}
+                disabled={isPending || isUploading || isSaving || atCap}
                 aria-label={`Take photo for ${field.label}`}
               >
                 {isUploading ? (
@@ -247,7 +257,7 @@ export function MultiPhotoField({
           capture="environment"
           className="hidden"
           onChange={handleCapture}
-          disabled={disabled || isUploading || atCap}
+          disabled={disabled || isUploading || isPending || isSaving || atCap}
         />
 
         {currentUrls.length > 0 && (
@@ -275,7 +285,7 @@ export function MultiPhotoField({
                       type="button"
                       aria-label={`Remove ${meta?.filename ?? "photo"} from ${field.label}`}
                       onClick={() => removePhoto(url)}
-                      disabled={isPending}
+                      disabled={isPending || isUploading || isSaving}
                       className="absolute top-1 right-1 min-h-[28px] min-w-[28px] rounded-full bg-white/90 px-1 text-sm leading-none font-semibold text-red-600 shadow hover:bg-white disabled:opacity-60"
                     >
                       ×
@@ -307,7 +317,7 @@ export function MultiPhotoField({
                     type="button"
                     aria-label={`Attach ${p.filename} to ${field.label}`}
                     onClick={() => addPhoto(p.url)}
-                    disabled={isPending || atCap}
+                    disabled={isPending || isUploading || isSaving || atCap}
                     className="aspect-square overflow-hidden rounded-md border border-zinc-200 hover:opacity-80 disabled:opacity-40"
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -320,6 +330,23 @@ export function MultiPhotoField({
                 ))}
               </div>
             )}
+          </div>
+        )}
+        {operationError && !disabled && (
+          <div className="space-y-1" role="alert">
+            <p className="text-sm text-red-600">{operationError}</p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={isSaving}
+              onClick={() => {
+                failedOperation.current = null;
+                setOperationError(null);
+              }}
+            >
+              Dismiss failed photo change
+            </Button>
           </div>
         )}
       </div>

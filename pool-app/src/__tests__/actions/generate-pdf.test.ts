@@ -66,7 +66,11 @@ function photoMeta(url: string, includedInPdf?: boolean) {
 }
 
 function okFetchResponse() {
-  return { arrayBuffer: async () => fakeImageBytes } as unknown as Response;
+  return {
+    ok: true,
+    redirected: false,
+    arrayBuffer: async () => fakeImageBytes,
+  } as unknown as Response;
 }
 
 function fetchedUrls(): string[] {
@@ -109,6 +113,66 @@ beforeEach(() => {
   );
 });
 
+describe("generateJobPdf — image URL boundary", () => {
+  const blockedUrl = "http://169.254.169.254/latest/meta-data";
+  it.each([
+    {
+      name: "legacy photo field",
+      fields: [photoField("pool_hero_photo", 1, "Pool photo")],
+      formData: { pool_hero_photo: blockedUrl },
+      photos: [],
+    },
+    {
+      name: "structured summary",
+      fields: [remarksTextareaField("107_summary", 107, "107. Summary")],
+      formData: { __summary_items: [{ text: "", photos: [blockedUrl] }] },
+      photos: [],
+    },
+    {
+      name: "inline remarks photo",
+      fields: [remarksTextareaField("15_remarks_notes", 15, "Remarks")],
+      formData: {
+        __photoAssignmentsByField: { "15_remarks_notes_photos": [blockedUrl] },
+      },
+      photos: [],
+    },
+    {
+      name: "orphan remarks recovery",
+      fields: [],
+      formData: {
+        __photoAssignmentsByField: { "15_remarks_notes_photos": [blockedUrl] },
+      },
+      photos: [],
+    },
+    {
+      name: "photo safety drain",
+      fields: [],
+      formData: {},
+      photos: [photoMeta(blockedUrl)],
+    },
+  ])(
+    "blocks network access and keeps the placeholder for $name",
+    async (input) => {
+      vi.mocked(db.job.findUnique).mockResolvedValue({
+        id: "blocked-image",
+        status: "DRAFT",
+        name: "Blocked image",
+        workerSignature: null,
+        formData: input.formData,
+        photos: input.photos,
+        template: { id: "t1", name: "Test", fields: input.fields },
+      } as never);
+      expect(await generateJobPdf("blocked-image")).toEqual({
+        success: true,
+        data: "stub_base64_pdf_data",
+      });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(jpegImageCount()).toBe(0);
+      expect(textWasDrawn("[photo could not be loaded]")).toBe(true);
+    },
+  );
+});
+
 describe("generateJobPdf — remarks-photo render path", () => {
   it("renders remarks note text AND fetches + embeds each photo in its *_photos bucket", async () => {
     vi.mocked(db.job.findUnique).mockResolvedValue({
@@ -119,15 +183,15 @@ describe("generateJobPdf — remarks-photo render path", () => {
       submittedAt: null,
       workerSignature: null,
       photos: [
-        photoMeta("http://test.local/r1"),
-        photoMeta("http://test.local/r2"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/r1"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/r2"),
       ],
       formData: {
         "15_remarks_notes": "Worker observed a minor seep near the pump seal.",
         __photoAssignmentsByField: {
           "15_remarks_notes_photos": [
-            "http://test.local/r1",
-            "http://test.local/r2",
+            "https://test-store.public.blob.vercel-storage.com/r1",
+            "https://test-store.public.blob.vercel-storage.com/r2",
           ],
         },
         __photoAssignmentsReviewed: true,
@@ -155,8 +219,12 @@ describe("generateJobPdf — remarks-photo render path", () => {
 
     // Both remarks photos were fetched AND embedded as JPEG images.
     const urls = fetchedUrls();
-    expect(urls).toContain("http://test.local/r1");
-    expect(urls).toContain("http://test.local/r2");
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/r1",
+    );
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/r2",
+    );
     expect(jpegImageCount()).toBe(2);
   });
 
@@ -165,15 +233,15 @@ describe("generateJobPdf — remarks-photo render path", () => {
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/r1"),
-        photoMeta("http://test.local/r2"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/r1"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/r2"),
       ],
       formData: {
         "15_remarks_notes": "n",
         __photoAssignmentsByField: {
           "15_remarks_notes_photos": [
-            "http://test.local/r1",
-            "http://test.local/r2",
+            "https://test-store.public.blob.vercel-storage.com/r1",
+            "https://test-store.public.blob.vercel-storage.com/r2",
           ],
         },
         __photoAssignmentsReviewed: true,
@@ -194,8 +262,16 @@ describe("generateJobPdf — remarks-photo render path", () => {
     const urls = fetchedUrls();
     // Each remarks URL fetched exactly once — Pass 2.5 consumption
     // removed them from the Q108 drain queue.
-    expect(urls.filter((u) => u === "http://test.local/r1")).toHaveLength(1);
-    expect(urls.filter((u) => u === "http://test.local/r2")).toHaveLength(1);
+    expect(
+      urls.filter(
+        (u) => u === "https://test-store.public.blob.vercel-storage.com/r1",
+      ),
+    ).toHaveLength(1);
+    expect(
+      urls.filter(
+        (u) => u === "https://test-store.public.blob.vercel-storage.com/r2",
+      ),
+    ).toHaveLength(1);
     // Total fetches = 2 remarks photos; no Q108 drain duplication.
     expect(urls).toHaveLength(2);
     // Exactly 2 JPEG addImages (no third from a drain re-render).
@@ -207,15 +283,21 @@ describe("generateJobPdf — remarks-photo render path", () => {
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/fifteen"),
-        photoMeta("http://test.local/thirtythree"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/fifteen"),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/thirtythree",
+        ),
       ],
       formData: {
         "15_remarks_notes": "note 15",
         "33_remarks_notes": "note 33",
         __photoAssignmentsByField: {
-          "15_remarks_notes_photos": ["http://test.local/fifteen"],
-          "33_remarks_notes_photos": ["http://test.local/thirtythree"],
+          "15_remarks_notes_photos": [
+            "https://test-store.public.blob.vercel-storage.com/fifteen",
+          ],
+          "33_remarks_notes_photos": [
+            "https://test-store.public.blob.vercel-storage.com/thirtythree",
+          ],
         },
         __photoAssignmentsReviewed: true,
       },
@@ -233,17 +315,27 @@ describe("generateJobPdf — remarks-photo render path", () => {
     expect(res.success).toBe(true);
 
     const urls = fetchedUrls();
-    expect(urls.filter((u) => u === "http://test.local/fifteen")).toHaveLength(
-      1,
-    );
     expect(
-      urls.filter((u) => u === "http://test.local/thirtythree"),
+      urls.filter(
+        (u) =>
+          u === "https://test-store.public.blob.vercel-storage.com/fifteen",
+      ),
+    ).toHaveLength(1);
+    expect(
+      urls.filter(
+        (u) =>
+          u === "https://test-store.public.blob.vercel-storage.com/thirtythree",
+      ),
     ).toHaveLength(1);
     // Template order: section 15 (order 15) before section 33 (order 33),
     // so "fifteen" must be fetched before "thirtythree" — proves the URL
     // attached to each bucket flows into the corresponding section.
-    const idx15 = urls.indexOf("http://test.local/fifteen");
-    const idx33 = urls.indexOf("http://test.local/thirtythree");
+    const idx15 = urls.indexOf(
+      "https://test-store.public.blob.vercel-storage.com/fifteen",
+    );
+    const idx33 = urls.indexOf(
+      "https://test-store.public.blob.vercel-storage.com/thirtythree",
+    );
     expect(idx15).toBeGreaterThanOrEqual(0);
     expect(idx33).toBeGreaterThanOrEqual(0);
     expect(idx15).toBeLessThan(idx33);
@@ -258,11 +350,12 @@ describe("generateJobPdf — remarks-photo render path", () => {
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/q5"),
-        photoMeta("http://test.local/drain"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/q5"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/drain"),
       ],
       formData: {
-        "5_picture_of_pool_and_spa_if_applicable": "http://test.local/q5",
+        "5_picture_of_pool_and_spa_if_applicable":
+          "https://test-store.public.blob.vercel-storage.com/q5",
       },
       template: {
         id: "t1",
@@ -279,9 +372,13 @@ describe("generateJobPdf — remarks-photo render path", () => {
 
     const urls = fetchedUrls();
     // Q5 fetched via legacy-mirror resolution.
-    expect(urls).toContain("http://test.local/q5");
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/q5",
+    );
     // Unassigned orphan drains into Q108 at render time.
-    expect(urls).toContain("http://test.local/drain");
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/drain",
+    );
     expect(jpegImageCount()).toBe(2);
   });
 
@@ -292,7 +389,7 @@ describe("generateJobPdf — remarks-photo render path", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
-        if (url === "http://test.local/bad") {
+        if (url === "https://test-store.public.blob.vercel-storage.com/bad") {
           throw new Error("Simulated network failure");
         }
         return okFetchResponse();
@@ -303,17 +400,17 @@ describe("generateJobPdf — remarks-photo render path", () => {
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/good1"),
-        photoMeta("http://test.local/bad"),
-        photoMeta("http://test.local/good2"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/good1"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/bad"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/good2"),
       ],
       formData: {
         "15_remarks_notes": "remarks note value",
         __photoAssignmentsByField: {
           "15_remarks_notes_photos": [
-            "http://test.local/good1",
-            "http://test.local/bad",
-            "http://test.local/good2",
+            "https://test-store.public.blob.vercel-storage.com/good1",
+            "https://test-store.public.blob.vercel-storage.com/bad",
+            "https://test-store.public.blob.vercel-storage.com/good2",
           ],
         },
         __photoAssignmentsReviewed: true,
@@ -335,9 +432,9 @@ describe("generateJobPdf — remarks-photo render path", () => {
     const urls = fetchedUrls();
     // All three fetches were attempted in order.
     expect(urls).toEqual([
-      "http://test.local/good1",
-      "http://test.local/bad",
-      "http://test.local/good2",
+      "https://test-store.public.blob.vercel-storage.com/good1",
+      "https://test-store.public.blob.vercel-storage.com/bad",
+      "https://test-store.public.blob.vercel-storage.com/good2",
     ]);
 
     // Exactly two successful JPEG embeds (good1 and good2; bad skipped).
@@ -362,19 +459,22 @@ describe("generateJobPdf — multi-photo map render path", () => {
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/q5-slot0"),
-        photoMeta("http://test.local/q5-slot1"),
-        photoMeta("http://test.local/q108"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/q5-slot0"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/q5-slot1"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/q108"),
       ],
       formData: {
         // Legacy mirror pins slot 0 per the multi-photo contract.
-        "5_picture_of_pool_and_spa_if_applicable": "http://test.local/q5-slot0",
+        "5_picture_of_pool_and_spa_if_applicable":
+          "https://test-store.public.blob.vercel-storage.com/q5-slot0",
         __photoAssignmentsByField: {
           "5_picture_of_pool_and_spa_if_applicable": [
-            "http://test.local/q5-slot0",
-            "http://test.local/q5-slot1",
+            "https://test-store.public.blob.vercel-storage.com/q5-slot0",
+            "https://test-store.public.blob.vercel-storage.com/q5-slot1",
           ],
-          "108_additional_photos": ["http://test.local/q108"],
+          "108_additional_photos": [
+            "https://test-store.public.blob.vercel-storage.com/q108",
+          ],
         },
         __photoAssignmentsReviewed: true,
       },
@@ -393,14 +493,24 @@ describe("generateJobPdf — multi-photo map render path", () => {
 
     const urls = fetchedUrls();
     // Both Q5 slots fetched exactly once — no drain duplication.
-    expect(urls.filter((u) => u === "http://test.local/q5-slot0")).toHaveLength(
-      1,
-    );
-    expect(urls.filter((u) => u === "http://test.local/q5-slot1")).toHaveLength(
-      1,
-    );
+    expect(
+      urls.filter(
+        (u) =>
+          u === "https://test-store.public.blob.vercel-storage.com/q5-slot0",
+      ),
+    ).toHaveLength(1);
+    expect(
+      urls.filter(
+        (u) =>
+          u === "https://test-store.public.blob.vercel-storage.com/q5-slot1",
+      ),
+    ).toHaveLength(1);
     // Q108 still fetched exactly once from its own owned URL.
-    expect(urls.filter((u) => u === "http://test.local/q108")).toHaveLength(1);
+    expect(
+      urls.filter(
+        (u) => u === "https://test-store.public.blob.vercel-storage.com/q108",
+      ),
+    ).toHaveLength(1);
     // Exactly 3 photo embeds: two Q5 slots + one Q108 photo.
     expect(jpegImageCount()).toBe(3);
   });
@@ -412,18 +522,21 @@ describe("generateJobPdf — multi-photo map render path", () => {
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/q5-slot0"),
-        photoMeta("http://test.local/q5-slot1"),
-        photoMeta("http://test.local/q108"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/q5-slot0"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/q5-slot1"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/q108"),
       ],
       formData: {
-        "5_picture_of_pool_and_spa_if_applicable": "http://test.local/q5-slot0",
+        "5_picture_of_pool_and_spa_if_applicable":
+          "https://test-store.public.blob.vercel-storage.com/q5-slot0",
         __photoAssignmentsByField: {
           "5_picture_of_pool_and_spa_if_applicable": [
-            "http://test.local/q5-slot0",
-            "http://test.local/q5-slot1",
+            "https://test-store.public.blob.vercel-storage.com/q5-slot0",
+            "https://test-store.public.blob.vercel-storage.com/q5-slot1",
           ],
-          "108_additional_photos": ["http://test.local/q108"],
+          "108_additional_photos": [
+            "https://test-store.public.blob.vercel-storage.com/q108",
+          ],
         },
         __photoAssignmentsReviewed: true,
       },
@@ -443,9 +556,15 @@ describe("generateJobPdf — multi-photo map render path", () => {
     const urls = fetchedUrls();
     // Q5 URLs appear BEFORE Q108's URL — proves Q5 slot 1 rendered under
     // Q5 (template order 5) rather than under Q108 (order 108).
-    const idxSlot0 = urls.indexOf("http://test.local/q5-slot0");
-    const idxSlot1 = urls.indexOf("http://test.local/q5-slot1");
-    const idxQ108 = urls.indexOf("http://test.local/q108");
+    const idxSlot0 = urls.indexOf(
+      "https://test-store.public.blob.vercel-storage.com/q5-slot0",
+    );
+    const idxSlot1 = urls.indexOf(
+      "https://test-store.public.blob.vercel-storage.com/q5-slot1",
+    );
+    const idxQ108 = urls.indexOf(
+      "https://test-store.public.blob.vercel-storage.com/q108",
+    );
     expect(idxSlot0).toBeGreaterThanOrEqual(0);
     expect(idxSlot1).toBeGreaterThanOrEqual(0);
     expect(idxQ108).toBeGreaterThanOrEqual(0);
@@ -461,14 +580,14 @@ describe("generateJobPdf — multi-photo map render path", () => {
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/q108a"),
-        photoMeta("http://test.local/q108b"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/q108a"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/q108b"),
       ],
       formData: {
         __photoAssignmentsByField: {
           "108_additional_photos": [
-            "http://test.local/q108a",
-            "http://test.local/q108b",
+            "https://test-store.public.blob.vercel-storage.com/q108a",
+            "https://test-store.public.blob.vercel-storage.com/q108b",
           ],
         },
         __photoAssignmentsReviewed: true,
@@ -484,12 +603,24 @@ describe("generateJobPdf — multi-photo map render path", () => {
     expect(res.success).toBe(true);
 
     const urls = fetchedUrls();
-    expect(urls).toContain("http://test.local/q108a");
-    expect(urls).toContain("http://test.local/q108b");
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/q108a",
+    );
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/q108b",
+    );
     // Each Q108 URL fetched exactly once — Pass 1 + Pass 3 are not
     // double-consuming.
-    expect(urls.filter((u) => u === "http://test.local/q108a")).toHaveLength(1);
-    expect(urls.filter((u) => u === "http://test.local/q108b")).toHaveLength(1);
+    expect(
+      urls.filter(
+        (u) => u === "https://test-store.public.blob.vercel-storage.com/q108a",
+      ),
+    ).toHaveLength(1);
+    expect(
+      urls.filter(
+        (u) => u === "https://test-store.public.blob.vercel-storage.com/q108b",
+      ),
+    ).toHaveLength(1);
     expect(jpegImageCount()).toBe(2);
   });
 
@@ -500,9 +631,12 @@ describe("generateJobPdf — multi-photo map render path", () => {
     vi.mocked(db.job.findUnique).mockResolvedValue({
       id: "job-1",
       status: "DRAFT",
-      photos: [photoMeta("http://test.local/legacy")],
+      photos: [
+        photoMeta("https://test-store.public.blob.vercel-storage.com/legacy"),
+      ],
       formData: {
-        pool_hero_photo: "http://test.local/legacy",
+        pool_hero_photo:
+          "https://test-store.public.blob.vercel-storage.com/legacy",
         __photoAssignmentsReviewed: true,
       },
       template: {
@@ -520,9 +654,11 @@ describe("generateJobPdf — multi-photo map render path", () => {
 
     const urls = fetchedUrls();
     // Legacy URL resolved and fetched exactly once; nothing drained to Q108.
-    expect(urls.filter((u) => u === "http://test.local/legacy")).toHaveLength(
-      1,
-    );
+    expect(
+      urls.filter(
+        (u) => u === "https://test-store.public.blob.vercel-storage.com/legacy",
+      ),
+    ).toHaveLength(1);
     expect(urls).toHaveLength(1);
     expect(jpegImageCount()).toBe(1);
   });
@@ -540,14 +676,18 @@ describe("generateJobPdf — remarks-photo recovery for missing-template", () =>
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/orphan-15-a"),
-        photoMeta("http://test.local/orphan-15-b"),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/orphan-15-a",
+        ),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/orphan-15-b",
+        ),
       ],
       formData: {
         __photoAssignmentsByField: {
           "15_remarks_notes_photos": [
-            "http://test.local/orphan-15-a",
-            "http://test.local/orphan-15-b",
+            "https://test-store.public.blob.vercel-storage.com/orphan-15-a",
+            "https://test-store.public.blob.vercel-storage.com/orphan-15-b",
           ],
         },
         __photoAssignmentsReviewed: true,
@@ -564,15 +704,25 @@ describe("generateJobPdf — remarks-photo recovery for missing-template", () =>
     expect(res.success).toBe(true);
 
     const urls = fetchedUrls();
-    expect(urls).toContain("http://test.local/orphan-15-a");
-    expect(urls).toContain("http://test.local/orphan-15-b");
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/orphan-15-a",
+    );
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/orphan-15-b",
+    );
     // Each URL fetched exactly once — recovery does not double up with
     // any drain or with Pass 2.5's consumption.
     expect(
-      urls.filter((u) => u === "http://test.local/orphan-15-a"),
+      urls.filter(
+        (u) =>
+          u === "https://test-store.public.blob.vercel-storage.com/orphan-15-a",
+      ),
     ).toHaveLength(1);
     expect(
-      urls.filter((u) => u === "http://test.local/orphan-15-b"),
+      urls.filter(
+        (u) =>
+          u === "https://test-store.public.blob.vercel-storage.com/orphan-15-b",
+      ),
     ).toHaveLength(1);
     expect(jpegImageCount()).toBe(2);
     // A recovery heading derived from the textarea id's leading number is
@@ -588,13 +738,17 @@ describe("generateJobPdf — remarks-photo recovery for missing-template", () =>
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/sec33"),
-        photoMeta("http://test.local/sec15"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/sec33"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/sec15"),
       ],
       formData: {
         __photoAssignmentsByField: {
-          "33_remarks_notes_photos": ["http://test.local/sec33"],
-          "15_remarks_notes_photos": ["http://test.local/sec15"],
+          "33_remarks_notes_photos": [
+            "https://test-store.public.blob.vercel-storage.com/sec33",
+          ],
+          "15_remarks_notes_photos": [
+            "https://test-store.public.blob.vercel-storage.com/sec15",
+          ],
         },
         __photoAssignmentsReviewed: true,
       },
@@ -609,8 +763,12 @@ describe("generateJobPdf — remarks-photo recovery for missing-template", () =>
     expect(res.success).toBe(true);
 
     const urls = fetchedUrls();
-    const idx15 = urls.indexOf("http://test.local/sec15");
-    const idx33 = urls.indexOf("http://test.local/sec33");
+    const idx15 = urls.indexOf(
+      "https://test-store.public.blob.vercel-storage.com/sec15",
+    );
+    const idx33 = urls.indexOf(
+      "https://test-store.public.blob.vercel-storage.com/sec33",
+    );
     expect(idx15).toBeGreaterThanOrEqual(0);
     expect(idx33).toBeGreaterThanOrEqual(0);
     // Section 15 renders before section 33, regardless of map insertion order.
@@ -628,14 +786,22 @@ describe("generateJobPdf — remarks-photo recovery for missing-template", () =>
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/sec15-orphan"),
-        photoMeta("http://test.local/sec33-inline"),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/sec15-orphan",
+        ),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/sec33-inline",
+        ),
       ],
       formData: {
         "33_remarks_notes": "note 33 inline",
         __photoAssignmentsByField: {
-          "15_remarks_notes_photos": ["http://test.local/sec15-orphan"],
-          "33_remarks_notes_photos": ["http://test.local/sec33-inline"],
+          "15_remarks_notes_photos": [
+            "https://test-store.public.blob.vercel-storage.com/sec15-orphan",
+          ],
+          "33_remarks_notes_photos": [
+            "https://test-store.public.blob.vercel-storage.com/sec33-inline",
+          ],
         },
         __photoAssignmentsReviewed: true,
       },
@@ -656,10 +822,18 @@ describe("generateJobPdf — remarks-photo recovery for missing-template", () =>
     const urls = fetchedUrls();
     // No duplicates — each URL fetched and embedded exactly once.
     expect(
-      urls.filter((u) => u === "http://test.local/sec15-orphan"),
+      urls.filter(
+        (u) =>
+          u ===
+          "https://test-store.public.blob.vercel-storage.com/sec15-orphan",
+      ),
     ).toHaveLength(1);
     expect(
-      urls.filter((u) => u === "http://test.local/sec33-inline"),
+      urls.filter(
+        (u) =>
+          u ===
+          "https://test-store.public.blob.vercel-storage.com/sec33-inline",
+      ),
     ).toHaveLength(1);
     expect(jpegImageCount()).toBe(2);
     // Recovery heading present for 15 but NOT for 33 (33 used its inline
@@ -675,7 +849,7 @@ describe("generateJobPdf — remarks-photo recovery for missing-template", () =>
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
-        if (url === "http://test.local/bad") {
+        if (url === "https://test-store.public.blob.vercel-storage.com/bad") {
           throw new Error("Simulated network failure");
         }
         return okFetchResponse();
@@ -686,16 +860,16 @@ describe("generateJobPdf — remarks-photo recovery for missing-template", () =>
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/good1"),
-        photoMeta("http://test.local/bad"),
-        photoMeta("http://test.local/good2"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/good1"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/bad"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/good2"),
       ],
       formData: {
         __photoAssignmentsByField: {
           "15_remarks_notes_photos": [
-            "http://test.local/good1",
-            "http://test.local/bad",
-            "http://test.local/good2",
+            "https://test-store.public.blob.vercel-storage.com/good1",
+            "https://test-store.public.blob.vercel-storage.com/bad",
+            "https://test-store.public.blob.vercel-storage.com/good2",
           ],
         },
         __photoAssignmentsReviewed: true,
@@ -712,9 +886,9 @@ describe("generateJobPdf — remarks-photo recovery for missing-template", () =>
 
     const urls = fetchedUrls();
     expect(urls).toEqual([
-      "http://test.local/good1",
-      "http://test.local/bad",
-      "http://test.local/good2",
+      "https://test-store.public.blob.vercel-storage.com/good1",
+      "https://test-store.public.blob.vercel-storage.com/bad",
+      "https://test-store.public.blob.vercel-storage.com/good2",
     ]);
     // Two successful embeds (good1 + good2); bad skipped without aborting.
     expect(jpegImageCount()).toBe(2);
@@ -740,7 +914,9 @@ describe("generateJobPdf — remarks-photo recovery for missing-template", () =>
       photos: [], // photo was deleted — pool empty
       formData: {
         __photoAssignmentsByField: {
-          "15_remarks_notes_photos": ["http://test.local/deleted"],
+          "15_remarks_notes_photos": [
+            "https://test-store.public.blob.vercel-storage.com/deleted",
+          ],
         },
         __photoAssignmentsReviewed: true,
       },
@@ -797,15 +973,19 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/q5-excluded", false),
-        photoMeta("http://test.local/q5-kept"), // undefined → include
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/q5-excluded",
+          false,
+        ),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/q5-kept"), // undefined → include
       ],
       formData: {
-        "5_picture_of_pool_and_spa_if_applicable": "http://test.local/q5-kept",
+        "5_picture_of_pool_and_spa_if_applicable":
+          "https://test-store.public.blob.vercel-storage.com/q5-kept",
         __photoAssignmentsByField: {
           "5_picture_of_pool_and_spa_if_applicable": [
-            "http://test.local/q5-excluded",
-            "http://test.local/q5-kept",
+            "https://test-store.public.blob.vercel-storage.com/q5-excluded",
+            "https://test-store.public.blob.vercel-storage.com/q5-kept",
           ],
         },
         __photoAssignmentsReviewed: true,
@@ -826,8 +1006,12 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
     const urls = fetchedUrls();
     // Excluded URL never reaches fetch — proves it didn't render under
     // Q5 (Pass 1 gate), Q108 (drain gate), or any safety drain.
-    expect(urls).not.toContain("http://test.local/q5-excluded");
-    expect(urls).toContain("http://test.local/q5-kept");
+    expect(urls).not.toContain(
+      "https://test-store.public.blob.vercel-storage.com/q5-excluded",
+    );
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/q5-kept",
+    );
     expect(jpegImageCount()).toBe(1);
   });
 
@@ -839,14 +1023,14 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/legacy-1"),
-        photoMeta("http://test.local/legacy-2"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/legacy-1"),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/legacy-2"),
       ],
       formData: {
         __photoAssignmentsByField: {
           "108_additional_photos": [
-            "http://test.local/legacy-1",
-            "http://test.local/legacy-2",
+            "https://test-store.public.blob.vercel-storage.com/legacy-1",
+            "https://test-store.public.blob.vercel-storage.com/legacy-2",
           ],
         },
         __photoAssignmentsReviewed: true,
@@ -862,8 +1046,12 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
     expect(res.success).toBe(true);
 
     const urls = fetchedUrls();
-    expect(urls).toContain("http://test.local/legacy-1");
-    expect(urls).toContain("http://test.local/legacy-2");
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/legacy-1",
+    );
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/legacy-2",
+    );
     expect(jpegImageCount()).toBe(2);
   });
 
@@ -874,10 +1062,17 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
     vi.mocked(db.job.findUnique).mockResolvedValue({
       id: "job-1",
       status: "DRAFT",
-      photos: [photoMeta("http://test.local/explicit-true", true)],
+      photos: [
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/explicit-true",
+          true,
+        ),
+      ],
       formData: {
         __photoAssignmentsByField: {
-          "108_additional_photos": ["http://test.local/explicit-true"],
+          "108_additional_photos": [
+            "https://test-store.public.blob.vercel-storage.com/explicit-true",
+          ],
         },
         __photoAssignmentsReviewed: true,
       },
@@ -890,7 +1085,9 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
 
     const res = await generateJobPdf("job-1");
     expect(res.success).toBe(true);
-    expect(fetchedUrls()).toContain("http://test.local/explicit-true");
+    expect(fetchedUrls()).toContain(
+      "https://test-store.public.blob.vercel-storage.com/explicit-true",
+    );
     expect(jpegImageCount()).toBe(1);
   });
 
@@ -902,8 +1099,13 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/excluded-orphan", false),
-        photoMeta("http://test.local/kept-orphan"),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/excluded-orphan",
+          false,
+        ),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/kept-orphan",
+        ),
       ],
       formData: {
         __photoAssignmentsReviewed: true,
@@ -919,8 +1121,12 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
     expect(res.success).toBe(true);
 
     const urls = fetchedUrls();
-    expect(urls).not.toContain("http://test.local/excluded-orphan");
-    expect(urls).toContain("http://test.local/kept-orphan");
+    expect(urls).not.toContain(
+      "https://test-store.public.blob.vercel-storage.com/excluded-orphan",
+    );
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/kept-orphan",
+    );
     expect(jpegImageCount()).toBe(1);
   });
 
@@ -934,14 +1140,19 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/recovery-excluded", false),
-        photoMeta("http://test.local/recovery-kept"),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/recovery-excluded",
+          false,
+        ),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/recovery-kept",
+        ),
       ],
       formData: {
         __photoAssignmentsByField: {
           "15_remarks_notes_photos": [
-            "http://test.local/recovery-excluded",
-            "http://test.local/recovery-kept",
+            "https://test-store.public.blob.vercel-storage.com/recovery-excluded",
+            "https://test-store.public.blob.vercel-storage.com/recovery-kept",
           ],
         },
         __photoAssignmentsReviewed: true,
@@ -957,8 +1168,12 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
     expect(res.success).toBe(true);
 
     const urls = fetchedUrls();
-    expect(urls).not.toContain("http://test.local/recovery-excluded");
-    expect(urls).toContain("http://test.local/recovery-kept");
+    expect(urls).not.toContain(
+      "https://test-store.public.blob.vercel-storage.com/recovery-excluded",
+    );
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/recovery-kept",
+    );
     // Kept photo still gets the recovery heading; excluded didn't sneak
     // back into Q108 either.
     expect(textWasDrawn("Remarks — Section 15")).toBe(true);
@@ -973,15 +1188,20 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/inline-excluded", false),
-        photoMeta("http://test.local/inline-kept"),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/inline-excluded",
+          false,
+        ),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/inline-kept",
+        ),
       ],
       formData: {
         "15_remarks_notes": "note",
         __photoAssignmentsByField: {
           "15_remarks_notes_photos": [
-            "http://test.local/inline-excluded",
-            "http://test.local/inline-kept",
+            "https://test-store.public.blob.vercel-storage.com/inline-excluded",
+            "https://test-store.public.blob.vercel-storage.com/inline-kept",
           ],
         },
         __photoAssignmentsReviewed: true,
@@ -1000,8 +1220,12 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
     expect(res.success).toBe(true);
 
     const urls = fetchedUrls();
-    expect(urls).not.toContain("http://test.local/inline-excluded");
-    expect(urls).toContain("http://test.local/inline-kept");
+    expect(urls).not.toContain(
+      "https://test-store.public.blob.vercel-storage.com/inline-excluded",
+    );
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/inline-kept",
+    );
     expect(jpegImageCount()).toBe(1);
   });
 
@@ -1014,15 +1238,22 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
     vi.mocked(db.job.findUnique).mockResolvedValue({
       id: "job-1",
       status: "DRAFT",
-      photos: [photoMeta("http://test.local/everywhere", false)],
+      photos: [
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/everywhere",
+          false,
+        ),
+      ],
       formData: {
         "5_picture_of_pool_and_spa_if_applicable":
-          "http://test.local/everywhere",
+          "https://test-store.public.blob.vercel-storage.com/everywhere",
         __photoAssignmentsByField: {
           "5_picture_of_pool_and_spa_if_applicable": [
-            "http://test.local/everywhere",
+            "https://test-store.public.blob.vercel-storage.com/everywhere",
           ],
-          "15_remarks_notes_photos": ["http://test.local/everywhere"],
+          "15_remarks_notes_photos": [
+            "https://test-store.public.blob.vercel-storage.com/everywhere",
+          ],
         },
         __photoAssignmentsReviewed: true,
       },
@@ -1041,7 +1272,9 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
     expect(res.success).toBe(true);
 
     const urls = fetchedUrls();
-    expect(urls).not.toContain("http://test.local/everywhere");
+    expect(urls).not.toContain(
+      "https://test-store.public.blob.vercel-storage.com/everywhere",
+    );
     // Strict zero — never rendered under Q5, Q108, inline-remarks, recovery,
     // or safety drain.
     expect(jpegImageCount()).toBe(0);
@@ -1057,8 +1290,11 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
       id: "job-1",
       status: "DRAFT",
       photos: [
-        photoMeta("http://test.local/seq-excluded", false),
-        photoMeta("http://test.local/seq-kept"),
+        photoMeta(
+          "https://test-store.public.blob.vercel-storage.com/seq-excluded",
+          false,
+        ),
+        photoMeta("https://test-store.public.blob.vercel-storage.com/seq-kept"),
       ],
       // No reviewed flag, no map entries → Pass 2 is open.
       formData: {},
@@ -1076,11 +1312,15 @@ describe("generateJobPdf — includedInPdf exclusion gate (CC-B2 contract)", () 
     expect(res.success).toBe(true);
 
     const urls = fetchedUrls();
-    expect(urls).not.toContain("http://test.local/seq-excluded");
+    expect(urls).not.toContain(
+      "https://test-store.public.blob.vercel-storage.com/seq-excluded",
+    );
     // The kept photo got promoted into the field by the sequential
     // fallback, so it renders under "Hero photo" instead of being
     // dropped along with the excluded one.
-    expect(urls).toContain("http://test.local/seq-kept");
+    expect(urls).toContain(
+      "https://test-store.public.blob.vercel-storage.com/seq-kept",
+    );
     expect(jpegImageCount()).toBe(1);
   });
 });

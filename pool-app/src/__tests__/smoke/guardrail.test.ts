@@ -18,8 +18,8 @@ vi.mock("resend", () => ({
   },
 }));
 
-vi.mock("@/lib/db", () => ({
-  db: {
+vi.mock("@/lib/db", () => {
+  const mockDb = {
     job: {
       findUnique: vi.fn(),
       create: vi.fn(),
@@ -29,8 +29,17 @@ vi.mock("@/lib/db", () => ({
     setting: {
       findUnique: vi.fn().mockResolvedValue(null),
     },
-  },
-}));
+    $queryRaw: vi.fn().mockResolvedValue([]),
+  };
+  return {
+    db: {
+      ...mockDb,
+      $transaction: vi.fn(
+        async (work: (tx: typeof mockDb) => Promise<unknown>) => work(mockDb),
+      ),
+    },
+  };
+});
 
 vi.mock("@/lib/actions/generate-pdf", () => ({
   generateJobPdf: vi.fn().mockResolvedValue({

@@ -1,6 +1,13 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -14,6 +21,7 @@ import {
   ADDITIONAL_PHOTOS_FIELD_ID,
   MULTI_PHOTO_FIELD_IDS,
 } from "@/lib/multi-photo";
+import { useJobSaveHandler, useJobSaves } from "@/components/job-save-provider";
 
 const UNASSIGNED = "UNASSIGNED";
 
@@ -43,7 +51,9 @@ export function PhotoAssignmentsEditor({
   initialFormData: FormData | null;
 }) {
   const router = useRouter();
+  const { isSaving, updateFormFields } = useJobSaves();
   const [isPending, startTransition] = useTransition();
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const photoFields = useMemo(
     () =>
@@ -71,20 +81,89 @@ export function PhotoAssignmentsEditor({
 
   const [assignments, setAssignments] =
     useState<PhotoAssignments>(initialAssignments);
+  const assignmentsRef = useRef(initialAssignments);
+  const serverAssignments = useRef(initialAssignments);
+  const lastSaved = useRef(initialAssignments);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const replaceAssignments = useCallback((next: PhotoAssignments) => {
+    assignmentsRef.current = next;
+    setAssignments(next);
+  }, []);
+
+  useEffect(() => {
+    const current = assignmentsRef.current;
+    const next = Object.fromEntries(
+      Object.entries(initialAssignments).map(([url, target]) => [
+        url,
+        url in current && current[url] !== serverAssignments.current[url]
+          ? current[url]
+          : target,
+      ]),
+    );
+    serverAssignments.current = initialAssignments;
+    lastSaved.current = initialAssignments;
+    if (JSON.stringify(next) !== JSON.stringify(current))
+      replaceAssignments(next);
+  }, [initialAssignments, replaceAssignments]);
+
+  const flushAssignments = useCallback(() => {
+    const pending = saveQueue.current.then(async () => {
+      const snapshot = { ...assignmentsRef.current };
+      if (JSON.stringify(snapshot) === JSON.stringify(lastSaved.current))
+        return;
+      try {
+        const res = await savePhotoAssignments(jobId, snapshot);
+        if (!res.success)
+          throw new Error(res.error ?? "Failed to save assignments");
+        lastSaved.current = snapshot;
+        // This action writes legacy field mirrors too. Synchronize RHF
+        // before the coordinator saves normal fields, preserving other edits.
+        updateFormFields(
+          Object.fromEntries(
+            photoFields.map((field) => [
+              field.id,
+              Object.entries(snapshot).find(
+                ([, target]) => target === field.id,
+              )?.[0] ?? "",
+            ]),
+          ),
+        );
+        setSaveError(null);
+        router.refresh();
+      } catch (error) {
+        setSaveError(
+          error instanceof Error ? error.message : "Failed to save assignments",
+        );
+        throw error;
+      }
+    });
+    saveQueue.current = pending.catch(() => undefined);
+    return pending;
+  }, [jobId, photoFields, router, updateFormFields]);
+
+  useJobSaveHandler(
+    photoFields.length ? "legacy-photo-assignments" : null,
+    flushAssignments,
+    "prepare",
+  );
 
   function setOne(url: string, target: string) {
-    setAssignments((prev) => ({ ...prev, [url]: target }));
+    if (isSaving) return;
+    replaceAssignments({ ...assignmentsRef.current, [url]: target });
+    setSaveError(null);
   }
 
   function handleSave() {
+    if (isSaving) return;
     startTransition(async () => {
-      const res = await savePhotoAssignments(jobId, assignments);
-      if (!res.success) {
-        toast.error(res.error ?? "Failed to save assignments");
-        return;
+      try {
+        await flushAssignments();
+        toast.success("Photo assignments saved");
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to save assignments",
+        );
       }
-      toast.success("Photo assignments saved");
-      router.refresh();
     });
   }
 
@@ -128,7 +207,7 @@ export function PhotoAssignmentsEditor({
                 aria-label={`Assignment for ${photo.filename}`}
                 value={current}
                 onChange={(e) => setOne(photo.url, e.target.value)}
-                disabled={isPending}
+                disabled={isPending || isSaving}
                 className="block w-full rounded-md border border-zinc-300 bg-white px-2 py-2 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none disabled:opacity-60"
               >
                 <option value={UNASSIGNED}>Unassigned</option>
@@ -143,11 +222,28 @@ export function PhotoAssignmentsEditor({
         })}
       </div>
 
+      {saveError && (
+        <div role="alert" className="space-y-1 text-sm text-red-600">
+          <p>{saveError}</p>
+          <button
+            type="button"
+            className="min-h-[44px] underline"
+            disabled={isPending || isSaving}
+            onClick={() => {
+              replaceAssignments(lastSaved.current);
+              setSaveError(null);
+            }}
+          >
+            Keep saved assignments
+          </button>
+        </div>
+      )}
+
       <div className="flex justify-end">
         <Button
           type="button"
           onClick={handleSave}
-          disabled={isPending}
+          disabled={isPending || isSaving}
           className="min-h-[44px]"
         >
           {isPending ? "Saving…" : "Save assignments"}

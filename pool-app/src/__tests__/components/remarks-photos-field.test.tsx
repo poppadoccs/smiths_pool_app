@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render as renderUI,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
+import type { ReactElement } from "react";
 import { act } from "react";
 
 // --- Mocks for client-side dependencies ---
@@ -19,8 +25,13 @@ vi.mock("@/lib/actions/photo-assignments", () => ({
 }));
 
 import { RemarksPhotosField } from "@/components/remarks-photos-field";
+import { JobSaveProvider } from "@/components/job-save-provider";
 import { assignRemarksFieldPhotos } from "@/lib/actions/photo-assignments";
 import { RESERVED_PHOTO_MAP_KEY } from "@/lib/multi-photo";
+
+function render(ui: ReactElement) {
+  return renderUI(ui, { wrapper: JobSaveProvider });
+}
 
 function photoMeta(url: string) {
   return {

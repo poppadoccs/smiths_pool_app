@@ -13,6 +13,7 @@ import {
   type FormTemplate,
 } from "@/lib/forms";
 import { type PhotoMetadata } from "@/lib/photos";
+import { fetchPdfImageBytes } from "@/lib/pdf-image";
 import {
   ADDITIONAL_PHOTOS_FIELD_ID,
   readFieldPhotoUrls,
@@ -92,6 +93,28 @@ export async function generateJobPdf(
 
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   let y = MARGIN;
+
+  // Shared by structured bullets and legacy summary values that span pages.
+  function renderSummaryText(lines: string[], x: number, bullet = false) {
+    const blockHeight = lines.length * 4 + 2;
+    if (blockHeight <= 280 - MARGIN && y + blockHeight > 280) {
+      doc.addPage();
+      y = MARGIN;
+    }
+    let offset = 0;
+    while (offset < lines.length) {
+      if (y + 6 > 280) {
+        doc.addPage();
+        y = MARGIN;
+      }
+      const availableLines = Math.floor((280 - y - 2) / 4);
+      const chunk = lines.slice(offset, offset + availableLines);
+      if (bullet && offset === 0) doc.text("•", MARGIN + 2, y);
+      doc.text(chunk, x, y);
+      y += chunk.length * 4 + 2;
+      offset += chunk.length;
+    }
+  }
 
   // --- Header: Company branding ---
   // Try to embed the real PoolSmiths logo; fall back to text if unavailable.
@@ -224,7 +247,8 @@ export async function generateJobPdf(
         raw.startsWith("http") &&
         !allJobPhotosArr.some((p) => p.url === raw)
       ) {
-        // External URL never in the pool — still render it verbatim.
+        // Preserve legacy URLs absent from the pool; the image loader
+        // validates their origin before making any request.
         // Excluded-from-PDF only applies to URLs in job.photos because
         // the includedInPdf flag lives on PhotoMetadata; an external
         // URL has no PhotoMetadata entry and therefore no flag.
@@ -415,8 +439,7 @@ export async function generateJobPdf(
       let preLabelFailures = 0;
       for (const url of urlsToRender) {
         try {
-          const res = await fetch(url);
-          const buf = await res.arrayBuffer();
+          const buf = await fetchPdfImageBytes(url);
           const b64 = Buffer.from(buf).toString("base64");
           const imgProps = doc.getImageProperties(b64);
           const { imgW, imgH } = fitPhoto(imgProps);
@@ -506,8 +529,8 @@ export async function generateJobPdf(
 
     // --- Structured summary: bulleted items with inline photos ---
     // Only when __summary_items exists (parseSummaryItems non-null);
-    // legacy jobs whose 107_summary holds a plain string fall through to
-    // the generic label/value row below, unchanged.
+    // Legacy plain strings retain their label/value layout below, with
+    // pagination when a summary value is taller than a page.
     if (summaryItems !== null) {
       // Heading — full-width bold label, like a section
       doc.setFont("helvetica", "bold");
@@ -534,34 +557,14 @@ export async function generateJobPdf(
         doc.setFontSize(9);
         const text = item.text.trim() || "(no notes)";
         const itemLines = doc.splitTextToSize(text, CONTENT_WIDTH - 8);
-        const itemH = itemLines.length * 4 + 2;
-        if (itemH <= 280 - MARGIN && y + itemH > 280) {
-          doc.addPage();
-          y = MARGIN;
-        }
-        // Both summary sections share pagination, including a single
-        // long bullet whose text needs more than one page.
-        let offset = 0;
-        while (offset < itemLines.length) {
-          if (y + 6 > 280) {
-            doc.addPage();
-            y = MARGIN;
-          }
-          const availableLines = Math.floor((280 - y - 2) / 4);
-          const chunk = itemLines.slice(offset, offset + availableLines);
-          if (offset === 0) doc.text("•", MARGIN + 2, y);
-          doc.text(chunk, MARGIN + 7, y);
-          y += chunk.length * 4 + 2;
-          offset += chunk.length;
-        }
+        renderSummaryText(itemLines, MARGIN + 7, true);
 
         // Photos under the bullet — same fetch/fit/center pipeline as
         // every other photo, honoring per-photo PDF exclusion.
         const itemUrls = item.photos.filter((u) => !excludedUrlSet.has(u));
         for (const url of itemUrls) {
           try {
-            const res = await fetch(url);
-            const buf = await res.arrayBuffer();
+            const buf = await fetchPdfImageBytes(url);
             const b64 = Buffer.from(buf).toString("base64");
             const imgProps = doc.getImageProperties(b64);
             const { imgW, imgH } = fitPhoto(imgProps);
@@ -637,8 +640,13 @@ export async function generateJobPdf(
       CONTENT_WIDTH - labelWidth - 5,
     );
     const blockHeight = Math.max(labelLines.length, valueLines.length) * 4 + 2;
+    const paginateLegacySummary =
+      isSummaryFieldId(field.id) && blockHeight > 280 - MARGIN;
+    const firstBlockHeight = paginateLegacySummary
+      ? labelLines.length * 4 + 2
+      : blockHeight;
 
-    if (y + blockHeight > 280) {
+    if (y + firstBlockHeight > 280) {
       doc.addPage();
       y = MARGIN;
     }
@@ -647,8 +655,12 @@ export async function generateJobPdf(
     doc.setFontSize(9);
     doc.text(labelLines, MARGIN, y);
     doc.setFont("helvetica", "normal");
-    doc.text(valueLines, MARGIN + labelWidth + 5, y);
-    y += blockHeight;
+    if (paginateLegacySummary) {
+      renderSummaryText(valueLines, MARGIN + labelWidth + 5);
+    } else {
+      doc.text(valueLines, MARGIN + labelWidth + 5, y);
+      y += blockHeight;
+    }
 
     // Remarks-photo attachments: for a remarks textarea field, render the
     // photos owned via the synthetic `*_remarks_notes_photos` map entry
@@ -663,8 +675,7 @@ export async function generateJobPdf(
       ).filter((u) => !excludedUrlSet.has(u));
       for (const url of remarksPhotoUrls) {
         try {
-          const res = await fetch(url);
-          const buf = await res.arrayBuffer();
+          const buf = await fetchPdfImageBytes(url);
           const b64 = Buffer.from(buf).toString("base64");
           const imgProps = doc.getImageProperties(b64);
           const { imgW, imgH } = fitPhoto(imgProps);
@@ -725,8 +736,7 @@ export async function generateJobPdf(
 
     for (const url of urls) {
       try {
-        const res = await fetch(url);
-        const buf = await res.arrayBuffer();
+        const buf = await fetchPdfImageBytes(url);
         const b64 = Buffer.from(buf).toString("base64");
         const imgProps = doc.getImageProperties(b64);
         const { imgW, imgH } = fitPhoto(imgProps);
@@ -754,8 +764,7 @@ export async function generateJobPdf(
   // does not contain field id "108_additional_photos" (e.g. DEFAULT_TEMPLATE).
   for (const url of photosQueue.splice(0)) {
     try {
-      const res = await fetch(url);
-      const buf = await res.arrayBuffer();
+      const buf = await fetchPdfImageBytes(url);
       const b64 = Buffer.from(buf).toString("base64");
       const imgProps = doc.getImageProperties(b64);
       const { imgW, imgH } = fitPhoto(imgProps);

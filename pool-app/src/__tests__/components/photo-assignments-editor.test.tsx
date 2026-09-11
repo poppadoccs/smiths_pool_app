@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render as renderUI, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
@@ -14,7 +15,12 @@ vi.mock("@/lib/actions/photo-assignments", () => ({
 }));
 
 import { PhotoAssignmentsEditor } from "@/components/photo-assignments";
+import { JobSaveProvider } from "@/components/job-save-provider";
 import type { FormField, FormTemplate } from "@/lib/forms";
+
+function render(ui: ReactElement) {
+  return renderUI(ui, { wrapper: JobSaveProvider });
+}
 
 function field(
   id: string,

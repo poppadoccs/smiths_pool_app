@@ -3,6 +3,11 @@
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import type { FormData } from "@/lib/forms";
+import {
+  ADDITIONAL_PHOTOS_FIELD_ID,
+  MULTI_PHOTO_FIELD_IDS,
+  RESERVED_PHOTO_MAP_KEY,
+} from "@/lib/multi-photo";
 
 // Autosave writer for the job-form RHF state. See plan 260417-mpf §AUTOSAVE-PRESERVE.
 //
@@ -17,11 +22,12 @@ import type { FormData } from "@/lib/forms";
 //   2. Submitted-job immunity — a status flip between page-load and the
 //      UPDATE MUST NOT corrupt the submitted record. Guarded by the atomic
 //      `AND status::text = 'DRAFT'` clause in the UPDATE.
-//   3. Reserved keys (prefix `__`) are owned by dedicated server actions
+//   3. Reserved keys (prefix `__`) and managed photo mirrors belong to dedicated actions
 //      (assignMultiFieldPhotos, savePhotoAssignments, saveSummaryItems).
 //      This channel strips any `__` key from the client payload before the
 //      patch is built, so RHF can never overwrite them even if something in
-//      the client accidentally serialized one.
+//      the client accidentally serialized one. Stale RHF photo mirrors must
+//      not resurrect an owner removed by a dedicated assignment action.
 //   4. `undefined` RHF values are filtered (never written), so a missing RHF
 //      key can't delete a DB value — a missing key in the patch leaves the
 //      DB value untouched under the jsonb merge.
@@ -59,12 +65,24 @@ export async function saveFormData(jobId: string, formData: FormData) {
     throw new Error(msg);
   }
 
+  // Managed photo fields stay assignment-owned even after their map entry is
+  // removed. Also protect any other owner present in a legacy assignment map.
+  // Ordinary single-slot photo fields remain RHF-owned when they have no map.
+  const managedPhotoIds = new Set([
+    ...MULTI_PHOTO_FIELD_IDS,
+    ADDITIONAL_PHOTOS_FIELD_ID,
+  ]);
+  const existing = job.formData as FormData | null;
+  const photoMap = existing?.[RESERVED_PHOTO_MAP_KEY];
+  if (photoMap && typeof photoMap === "object" && !Array.isArray(photoMap)) {
+    for (const fieldId of Object.keys(photoMap)) managedPhotoIds.add(fieldId);
+  }
+
   // Build the patch: drop `undefined` values (can't delete a DB key by
   // accident under jsonb merge) and strip `__`-prefixed keys (reserved-key
   // channel; client is never trusted through autosave). A stripped reserved
   // key is a bug signal. The resulting patch contains only template-field
-  // keys RHF owns — it never touches any reserved key, which is what closes
-  // the race with dedicated-action writes.
+  // keys RHF owns — reserved keys and managed photo mirrors are omitted.
   const patch: Record<string, unknown> = {};
   const strippedReservedKeys: string[] = [];
   for (const [k, v] of Object.entries(formData)) {
@@ -73,6 +91,7 @@ export async function saveFormData(jobId: string, formData: FormData) {
       strippedReservedKeys.push(k);
       continue;
     }
+    if (managedPhotoIds.has(k)) continue;
     patch[k] = v;
   }
   if (strippedReservedKeys.length > 0) {

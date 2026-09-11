@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { isDeepStrictEqual } from "node:util";
 
 vi.mock("@/lib/db", () => ({
   db: {
@@ -50,7 +51,7 @@ function textareaField(id: string) {
 
 // The actions now write an atomic jsonb-merge PATCH via db.$executeRaw
 // (ultrareview bug_006) — a tagged template whose interpolated values are
-// [patchJson, jobId]. This returns the parsed patch: exactly the keys the
+// start with [patchJson, jobId]. This returns the parsed patch: exactly the keys the
 // action wrote. Keys ABSENT from the patch are untouched in the DB by
 // construction (jsonb || merge), so "preservation" assertions check for
 // absence rather than passthrough.
@@ -248,6 +249,227 @@ describe("assignMultiFieldPhotos", () => {
     // Unrelated formData survives BY OMISSION: the jsonb-merge patch must
     // not contain keys the action doesn't own (ultrareview bug_006).
     expect(saved).not.toHaveProperty("unrelated");
+  });
+});
+
+describe("assignment snapshot conflicts", () => {
+  function makeJob() {
+    return {
+      id: "job-1",
+      status: "DRAFT",
+      photos: ["u1", "u2", "u3"].map(photoMeta),
+      formData: {
+        [RESERVED_PHOTO_MAP_KEY]: {},
+        [Q5]: "",
+        [Q16]: "",
+        [Q108]: "",
+        [LEGACY_SINGLE]: "",
+        customer: "Old customer",
+        [REMARKS_Q15]: "Old remarks",
+        __summary_items: [{ text: "Old original", photos: [] }],
+        __reinspection_summary_items: [
+          { text: "Old reinspection", photos: [] },
+        ],
+      } as Record<string, unknown>,
+      template: {
+        fields: [
+          ...[Q5, Q16, Q108, LEGACY_SINGLE].map(photoField),
+          textareaField(REMARKS_Q15),
+        ],
+      },
+    };
+  }
+
+  // Model atomic UPDATE predicates against the current row, after both actions
+  // can have read the same snapshot. The isolated DB test proves SQL execution;
+  // this harness deterministically covers the competing writer interleavings.
+  function useAtomicRow(
+    job: ReturnType<typeof makeJob>,
+    beforeWrite?: () => void,
+  ) {
+    vi.mocked(db.job.findUnique).mockImplementation((async () =>
+      structuredClone(job)) as never);
+    vi.mocked(db.$executeRaw).mockImplementation((async (
+      sql: TemplateStringsArray,
+      patchJson: string,
+      _jobId: string,
+      expectedPhotosJson: string,
+      expectedOwnershipJson: string,
+    ) => {
+      beforeWrite?.();
+      const statement = sql.join("?");
+      if (job.status !== "DRAFT") return 0;
+      if (statement.includes("@>")) {
+        const expectedPhotos = JSON.parse(expectedPhotosJson) as {
+          url: string;
+        }[];
+        if (
+          expectedPhotos.some(
+            ({ url }) => !job.photos.some((p) => p.url === url),
+          )
+        ) {
+          return 0;
+        }
+      }
+      if (statement.includes("jsonb_each")) {
+        const expected = JSON.parse(expectedOwnershipJson) as Record<
+          string,
+          unknown
+        >;
+        if (
+          Object.entries(expected).some(
+            ([key, value]) =>
+              !isDeepStrictEqual(job.formData[key] ?? null, value),
+          )
+        ) {
+          return 0;
+        }
+      }
+      job.formData = { ...job.formData, ...JSON.parse(patchJson) };
+      return 1;
+    }) as never);
+  }
+
+  const writers = [
+    ["multi-photo", () => assignMultiFieldPhotos("job-1", Q5, ["u1"])],
+    ["additional photos", () => assignAdditionalPhotos("job-1", ["u1"])],
+    [
+      "remarks photos",
+      () => assignRemarksFieldPhotos("job-1", REMARKS_Q15_PHOTOS, ["u1"]),
+    ],
+    [
+      "legacy assignment",
+      () => savePhotoAssignments("job-1", { u1: LEGACY_SINGLE }),
+    ],
+  ] as const;
+
+  it.each(writers)(
+    "%s compares only ownership keys and keeps the photo containment guard",
+    async (_name, write) => {
+      const job = makeJob();
+      useAtomicRow(job);
+      expect(await write()).toEqual({ success: true });
+      const call = vi.mocked(db.$executeRaw).mock.calls[0];
+      const sql = (call[0] as TemplateStringsArray).join("?");
+      expect(sql).toContain("status::text = 'DRAFT'");
+      expect(sql).toContain("COALESCE(photos, '[]'::jsonb) @>");
+      expect(sql).toContain("NOT EXISTS");
+      expect(sql).toContain("IS DISTINCT FROM expected.value");
+      expect(JSON.parse(call[3] as string)).toEqual([
+        { url: "u1" },
+        { url: "u2" },
+        { url: "u3" },
+      ]);
+      expect(JSON.parse(call[4] as string)).toEqual({
+        [RESERVED_PHOTO_MAP_KEY]: {},
+        [Q5]: "",
+        [Q16]: "",
+        [Q108]: "",
+        [LEGACY_SINGLE]: "",
+      });
+    },
+  );
+
+  it("rejects a stale sibling map write, then permits a retry from the latest map", async () => {
+    const job = makeJob();
+    useAtomicRow(job);
+    const [multi, additional] = await Promise.all([
+      assignMultiFieldPhotos("job-1", Q5, ["u1", "u2"]),
+      assignAdditionalPhotos("job-1", ["u3"]),
+    ]);
+    expect(multi.success).toBe(true);
+    expect(additional.success).toBe(false);
+    expect(additional.error).toMatch(/no longer editable.*Refresh.*try again/);
+    expect(job.formData[RESERVED_PHOTO_MAP_KEY]).toEqual({
+      [Q5]: ["u1", "u2"],
+    });
+    expect(db.$executeRaw).toHaveBeenCalledTimes(2);
+
+    expect(await assignAdditionalPhotos("job-1", ["u3"])).toEqual({
+      success: true,
+    });
+    expect(job.formData[RESERVED_PHOTO_MAP_KEY]).toEqual({
+      [Q5]: ["u1", "u2"],
+      [Q108]: ["u3"],
+    });
+  });
+
+  it("rejects a stale steal when a legacy mirror changed but the map did not", async () => {
+    const job = makeJob();
+    useAtomicRow(job);
+    const [legacy, multi] = await Promise.all([
+      savePhotoAssignments("job-1", { u1: LEGACY_SINGLE }),
+      assignMultiFieldPhotos("job-1", Q5, ["u1"]),
+    ]);
+    expect(legacy.success).toBe(true);
+    expect(multi.success).toBe(false);
+    expect(multi.error).toMatch(/Refresh.*try again/);
+    expect(job.formData[RESERVED_PHOTO_MAP_KEY]).toEqual({});
+    expect(job.formData[LEGACY_SINGLE]).toBe("u1");
+
+    expect(await assignMultiFieldPhotos("job-1", Q5, ["u1"])).toEqual({
+      success: true,
+    });
+    expect(job.formData[LEGACY_SINGLE]).toBe("");
+    expect(job.formData[RESERVED_PHOTO_MAP_KEY]).toEqual({ [Q5]: ["u1"] });
+  });
+
+  it.each(writers)(
+    "%s allows concurrent text, summary, and new-upload changes",
+    async (_name, write) => {
+      const job = makeJob();
+      useAtomicRow(job, () => {
+        job.formData.customer = "New customer";
+        job.formData[REMARKS_Q15] = "New remarks";
+        job.formData.__summary_items = [{ text: "New original", photos: [] }];
+        job.formData.__reinspection_summary_items = [
+          { text: "New reinspection", photos: [] },
+        ];
+        job.photos.push(photoMeta("new-upload"));
+      });
+      expect(await write()).toEqual({ success: true });
+      expect(job.formData).toMatchObject({
+        customer: "New customer",
+        [REMARKS_Q15]: "New remarks",
+        __summary_items: [{ text: "New original", photos: [] }],
+        __reinspection_summary_items: [
+          { text: "New reinspection", photos: [] },
+        ],
+      });
+      expect(job.photos).toContainEqual(photoMeta("new-upload"));
+    },
+  );
+
+  it.each([false, true])(
+    "treats missing and null ownership keys equivalently (snapshot null: %s)",
+    async (snapshotNull) => {
+      const job = makeJob();
+      const nullKeys = Object.fromEntries(
+        [RESERVED_PHOTO_MAP_KEY, Q5, Q16, Q108, LEGACY_SINGLE].map((key) => [
+          key,
+          null,
+        ]),
+      );
+      job.formData = snapshotNull ? nullKeys : {};
+      useAtomicRow(job, () => {
+        job.formData = snapshotNull ? {} : nullKeys;
+      });
+      expect(await assignAdditionalPhotos("job-1", ["u1"])).toEqual({
+        success: true,
+      });
+    },
+  );
+
+  it("still rejects a photo removed after the assignment read", async () => {
+    const job = makeJob();
+    const originalFormData = structuredClone(job.formData);
+    useAtomicRow(job, () => {
+      job.photos = job.photos.filter((p) => p.url !== "u1");
+    });
+    const result = await assignMultiFieldPhotos("job-1", Q5, ["u1"]);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/no longer editable.*Refresh.*try again/);
+    expect(job.formData).toEqual(originalFormData);
   });
 });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Check, ChevronDown, ChevronUp, Loader2, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,12 @@ import {
 } from "@/lib/summary";
 import type { FormData as JobFormData } from "@/lib/forms";
 import type { PhotoMetadata } from "@/lib/photos";
+import { useJobSaveHandler } from "@/components/job-save-provider";
+import {
+  clearSummaryDraft,
+  loadSummaryDraft,
+  saveSummaryDraft,
+} from "@/lib/form-draft";
 
 // Shared editor for Q107 Summary and optional Q109 Re-Inspection Summary:
 // identical bullet points, text, photo controls and capacity limits.
@@ -48,22 +54,23 @@ export function SummaryItemsEditor({
   const [items, setItems] = useState<SummaryItem[] | null>(() =>
     parseSummaryItems(formData, fieldId),
   );
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">(
-    "idle",
-  );
+  const [saveStatus, setSaveStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
   const [pickerOpenFor, setPickerOpenFor] = useState<number | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const savedTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   // The latest items snapshot, readable from timers without stale closures.
   // Written only in the handlers below (never during render).
-  const itemsRef = useRef<SummaryItem[] | null>(null);
+  const itemsRef = useRef<SummaryItem[] | null>(items);
   // Save serialization: every save chains onto this promise, so writes
   // reach the server strictly in order and an older whole-array write can
   // never land after (and clobber) a newer one. Each queued run reads
   // itemsRef.current at RUN time, so back-to-back saves coalesce into
   // "send the latest snapshot"; lastSavedRef dedupes exact repeats.
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
-  const lastSavedRef = useRef<SummaryItem[] | null>(null);
+  const lastSavedRef = useRef<SummaryItem[] | null>(items);
+  const restoredDraft = useRef(false);
   // Hard ceiling on unsaved typing: starts with the first debounced change
   // and is NOT reset by further keystrokes, so continuous typing still
   // persists at least every 5s.
@@ -77,67 +84,108 @@ export function SummaryItemsEditor({
     };
   }, []);
 
-  function enqueueSave() {
-    saveQueue.current = saveQueue.current.then(async () => {
+  const enqueueSave = useCallback(() => {
+    const pending = saveQueue.current.then(async () => {
       const snapshot = itemsRef.current;
       if (!snapshot || snapshot === lastSavedRef.current) return;
       setSaveStatus("saving");
       try {
         const res = await saveSummaryItems(jobId, snapshot, fieldId);
         if (!res.success) {
-          toast.error(res.error ?? "Failed to save summary");
-          setSaveStatus("idle");
-          return;
+          throw new Error(
+            `${fieldLabel}: ${res.error ?? "Failed to save summary"}`,
+          );
         }
         lastSavedRef.current = snapshot;
+        clearSummaryDraft(jobId, fieldId, snapshot);
         setSaveStatus("saved");
         clearTimeout(savedTimer.current);
         savedTimer.current = setTimeout(() => setSaveStatus("idle"), 2000);
-      } catch {
-        toast.error("Failed to save summary");
-        setSaveStatus("idle");
+      } catch (error) {
+        setSaveStatus("error");
+        throw error;
       }
     });
-  }
+    saveQueue.current = pending.catch(() => undefined);
+    return pending;
+  }, [jobId, fieldId, fieldLabel]);
+
+  const saveInBackground = useCallback(() => {
+    void enqueueSave().catch((error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to save summary",
+      );
+    });
+  }, [enqueueSave]);
 
   // Structural changes (add/remove/reorder/photos) save immediately; text
   // changes debounce, flush on blur, and flush at least every 5s during
   // continuous typing so a crash mid-paragraph can't lose the paragraph.
-  function clearTypingTimers() {
+  const clearTypingTimers = useCallback(() => {
     clearTimeout(saveTimer.current);
     saveTimer.current = undefined;
     clearTimeout(maxFlushTimer.current);
     maxFlushTimer.current = undefined;
-  }
+  }, []);
 
-  function applyAndSave(next: SummaryItem[]) {
-    clearTypingTimers();
-    itemsRef.current = next;
-    setItems(next);
-    enqueueSave();
-  }
+  const applyAndSave = useCallback(
+    (next: SummaryItem[]) => {
+      clearTypingTimers();
+      itemsRef.current = next;
+      setItems(next);
+      saveSummaryDraft(jobId, fieldId, next);
+      saveInBackground();
+    },
+    [clearTypingTimers, jobId, fieldId, saveInBackground],
+  );
 
   function applyDebounced(next: SummaryItem[]) {
     itemsRef.current = next;
     setItems(next);
+    setSaveStatus("idle");
+    saveSummaryDraft(jobId, fieldId, next);
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       clearTypingTimers();
-      enqueueSave();
+      saveInBackground();
     }, 1000);
     if (maxFlushTimer.current === undefined) {
       maxFlushTimer.current = setTimeout(() => {
         maxFlushTimer.current = undefined;
-        enqueueSave();
+        saveInBackground();
       }, 5000);
     }
   }
 
-  function flushPendingSave() {
-    if (saveTimer.current === undefined) return;
+  const flushPendingSave = useCallback(() => {
     clearTypingTimers();
-    enqueueSave();
-  }
+    // Always enter the queue: a failed save has no pending typing timer,
+    // and a newer snapshot may still be waiting behind an in-flight save.
+    return enqueueSave();
+  }, [clearTypingTimers, enqueueSave]);
+
+  useJobSaveHandler(`summary:${fieldId}`, flushPendingSave);
+
+  useEffect(() => {
+    if (disabled) return;
+    const draft = restoredDraft.current
+      ? null
+      : loadSummaryDraft(jobId, fieldId);
+    restoredDraft.current = true;
+    const current = draft ?? itemsRef.current;
+    if (!current) return;
+    const ownedUrls = new Set(jobPhotos.map((photo) => photo.url));
+    let changed = draft !== null;
+    const next = current.map((item) => {
+      const photos = item.photos.filter((url) => ownedUrls.has(url));
+      if (photos.length === item.photos.length) return item;
+      changed = true;
+      return { ...item, photos };
+    });
+    // Metadata refreshes may remove an attachment. Reconcile only its URLs;
+    // current text (including unsaved typing) must survive router.refresh().
+    if (changed) applyAndSave(next);
+  }, [disabled, jobId, fieldId, jobPhotos, applyAndSave]);
 
   const legacyBlob =
     formData && typeof formData[fieldId] === "string"
@@ -188,7 +236,6 @@ export function SummaryItemsEditor({
   }
 
   function addItem() {
-    flushPendingSave();
     applyAndSave([...items!, { text: "", photos: [] }]);
   }
 
@@ -236,7 +283,10 @@ export function SummaryItemsEditor({
     >
       <div className="flex items-center justify-between">
         <Label className="text-base">{fieldLabel}</Label>
-        <span className="flex min-h-[20px] items-center gap-1.5 text-sm">
+        <span
+          role="status"
+          className="flex min-h-[20px] items-center gap-1.5 text-sm"
+        >
           {saveStatus === "saving" && (
             <span className="flex items-center gap-1.5 text-zinc-500">
               <Loader2 className="size-3.5 animate-spin" />
@@ -248,6 +298,9 @@ export function SummaryItemsEditor({
               <Check className="size-3.5" />
               Saved
             </span>
+          )}
+          {saveStatus === "error" && (
+            <span className="text-red-600">Not saved. Use Save to retry.</span>
           )}
         </span>
       </div>
@@ -288,7 +341,10 @@ export function SummaryItemsEditor({
                   className="min-h-[72px] bg-white text-base"
                   disabled={disabled}
                   onChange={(e) => updateItemText(index, e.target.value)}
-                  onBlur={flushPendingSave}
+                  onBlur={() => {
+                    clearTypingTimers();
+                    saveInBackground();
+                  }}
                 />
                 {!disabled && (
                   <div className="flex flex-col gap-1">

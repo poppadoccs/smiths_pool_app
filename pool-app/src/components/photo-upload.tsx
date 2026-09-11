@@ -1,16 +1,17 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import imageCompression from "browser-image-compression";
 import { Button } from "@/components/ui/button";
 import { Camera, ImagePlus, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { isHeicFile, COMPRESSION_OPTIONS } from "@/lib/photos";
-import { savePhotoMetadata } from "@/lib/actions/photos";
+import { useJobSaveHandler, useJobSaves } from "@/components/job-save-provider";
 
 type UploadStatus = {
   id: string;
+  fileKey: string;
   filename: string;
   progress: number;
   status: "compressing" | "uploading" | "done" | "error";
@@ -19,9 +20,24 @@ type UploadStatus = {
 
 export function PhotoUpload({ jobId }: { jobId: string }) {
   const router = useRouter();
+  const { isSaving } = useJobSaves();
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const libraryInputRef = useRef<HTMLInputElement>(null);
   const [uploads, setUploads] = useState<UploadStatus[]>([]);
+  const processingRef = useRef(false);
+  const uploadSequence = useRef(0);
+  const pendingUploads = useRef<Promise<void>>(Promise.resolve());
+  const failedUploads = useRef(new Map<string, string>());
+
+  const waitForPendingUploads = useCallback(async () => {
+    await pendingUploads.current;
+    if (failedUploads.current.size > 0) {
+      throw new Error(
+        "A photo upload failed. Retry it or remove the failed upload before submitting.",
+      );
+    }
+  }, []);
+  useJobSaveHandler("photo-uploads", waitForPendingUploads, "prepare");
 
   const isProcessing = uploads.some(
     (u) => u.status === "compressing" || u.status === "uploading",
@@ -33,15 +49,25 @@ export function PhotoUpload({ jobId }: { jobId: string }) {
     );
   }
 
-  async function processFiles(files: FileList) {
+  async function processFiles(files: File[]) {
     // Process sequentially to avoid iPad memory pressure
-    for (const file of Array.from(files)) {
-      const id = `${Date.now()}-${file.name}`;
+    for (const file of files) {
+      const id = `${Date.now()}-${uploadSequence.current++}`;
       const originalFilename = file.name;
+      const fileKey = `${file.name}:${file.size}:${file.lastModified}`;
+      failedUploads.current.delete(fileKey);
 
       setUploads((prev) => [
-        ...prev,
-        { id, filename: originalFilename, progress: 0, status: "compressing" },
+        ...prev.filter(
+          (upload) => upload.fileKey !== fileKey || upload.status !== "error",
+        ),
+        {
+          id,
+          fileKey,
+          filename: originalFilename,
+          progress: 0,
+          status: "compressing",
+        },
       ]);
 
       try {
@@ -84,10 +110,8 @@ export function PhotoUpload({ jobId }: { jobId: string }) {
 
         const formData = new FormData();
         formData.append("file", compressed);
-        formData.append(
-          "filename",
-          originalFilename.replace(/[^a-zA-Z0-9._-]/g, "_"),
-        );
+        formData.append("jobId", jobId);
+        formData.append("originalFilename", originalFilename);
 
         const response = await fetch("/api/photos/upload", {
           method: "POST",
@@ -99,25 +123,16 @@ export function PhotoUpload({ jobId }: { jobId: string }) {
           throw new Error(err.error || `Upload failed (${response.status})`);
         }
 
-        const result = await response.json();
+        await response.json();
         updateUpload(id, { progress: 100 });
-        console.log(`[photo] Upload complete: ${result.url}`);
 
-        // Step 4: Save metadata to DB
-        console.log("[photo] Saving metadata...");
-        await savePhotoMetadata(jobId, {
-          url: result.url,
-          filename: originalFilename,
-          size: compressed.size,
-        });
-        console.log("[photo] Metadata saved");
-
-        // Step 5: Done — remove from list and refresh
+        // The route responds only after adding its own Blob URL to this job.
         updateUpload(id, { status: "done" });
         setUploads((prev) => prev.filter((u) => u.id !== id));
         router.refresh();
       } catch (err) {
         const message = err instanceof Error ? err.message : "Upload failed";
+        failedUploads.current.set(fileKey, message);
         console.error(`[photo] Error: ${message}`, err);
         updateUpload(id, { status: "error", error: message });
         toast.error(`Failed to upload ${originalFilename}: ${message}`);
@@ -126,12 +141,20 @@ export function PhotoUpload({ jobId }: { jobId: string }) {
   }
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      processFiles(files);
-    }
+    const files = Array.from(e.target.files ?? []);
     // Reset so the same file can be re-selected
     e.target.value = "";
+    if (isSaving || processingRef.current || files.length === 0) return;
+    processingRef.current = true;
+    pendingUploads.current = processFiles(files).finally(() => {
+      processingRef.current = false;
+    });
+  }
+
+  function dismissFailedUpload(upload: UploadStatus) {
+    if (isSaving) return;
+    failedUploads.current.delete(upload.fileKey);
+    setUploads((current) => current.filter((item) => item.id !== upload.id));
   }
 
   const activeUploads = uploads.filter((u) => u.status !== "done");
@@ -144,6 +167,7 @@ export function PhotoUpload({ jobId }: { jobId: string }) {
         type="file"
         accept="image/jpeg,image/png,image/heic,image/heif"
         className="hidden"
+        disabled={isSaving || isProcessing}
         onChange={handleChange}
       />
       <input
@@ -152,6 +176,7 @@ export function PhotoUpload({ jobId }: { jobId: string }) {
         accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
         multiple
         className="hidden"
+        disabled={isSaving || isProcessing}
         onChange={handleChange}
       />
 
@@ -160,7 +185,7 @@ export function PhotoUpload({ jobId }: { jobId: string }) {
         <Button
           type="button"
           className="min-h-[56px] flex-1 gap-2 text-lg"
-          disabled={isProcessing}
+          disabled={isProcessing || isSaving}
           onClick={() => cameraInputRef.current?.click()}
         >
           <Camera className="size-5" />
@@ -170,7 +195,7 @@ export function PhotoUpload({ jobId }: { jobId: string }) {
           type="button"
           variant="outline"
           className="min-h-[56px] flex-1 gap-2 text-lg"
-          disabled={isProcessing}
+          disabled={isProcessing || isSaving}
           onClick={() => libraryInputRef.current?.click()}
         >
           <ImagePlus className="size-5" />
@@ -199,7 +224,19 @@ export function PhotoUpload({ jobId }: { jobId: string }) {
                 </div>
               )}
               {u.status === "error" && (
-                <p className="text-sm text-red-600">{u.error}</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm text-red-600">{u.error}</p>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={isSaving}
+                    onClick={() => dismissFailedUpload(u)}
+                    aria-label={`Remove failed upload ${u.filename}`}
+                  >
+                    Remove failed upload
+                  </Button>
+                </div>
               )}
             </div>
           ))}

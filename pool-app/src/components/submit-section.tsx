@@ -15,11 +15,13 @@ import {
 import { Loader2, Send, CheckCircle2, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { submitJob } from "@/lib/actions/submit";
-import { clearDraft } from "@/components/job-form";
+import { clearDraft } from "@/lib/form-draft";
+import { useJobSaves } from "@/components/job-save-provider";
 import { SignaturePad } from "@/components/signature-pad";
 
 export function SubmitSection({ jobId }: { jobId: string }) {
   const router = useRouter();
+  const { runAfterSave, isSaving } = useJobSaves();
   const [name, setName] = useState("");
   const [signatureData, setSignatureData] = useState("");
   const [showConfirm, setShowConfirm] = useState(false);
@@ -35,29 +37,38 @@ export function SubmitSection({ jobId }: { jobId: string }) {
     setSubmitting(true);
     setError(null);
 
-    const result = await submitJob(
-      jobId,
-      name.trim(),
-      signatureData || undefined,
-    );
+    try {
+      const result = await runAfterSave(() =>
+        submitJob(jobId, name.trim(), signatureData || undefined),
+      );
 
-    if (result.success) {
-      clearDraft(jobId);
-      setEmailSent(result.emailSent !== false);
-      setSubmitted(true);
-      setShowConfirm(false);
-      if (result.emailSent === false) {
-        toast.warning(
-          'Job saved — email didn\'t send. Tap "Resend or edit" below to try again, and let the office know directly.',
-          { duration: Infinity },
-        );
+      if (result.success) {
+        clearDraft(jobId);
+        setEmailSent(result.emailSent !== false);
+        setSubmitted(true);
+        setShowConfirm(false);
+        if (result.emailSent === false) {
+          toast.warning(
+            'Job saved — email didn\'t send. Tap "Resend or edit" below to try again, and let the office know directly.',
+            { duration: Infinity },
+          );
+        } else {
+          toast.success("Job submitted for review!");
+        }
+        router.refresh();
       } else {
-        toast.success("Job submitted for review!");
+        setError(result.error || "Submission failed");
+        setShowConfirm(false);
+        setSubmitting(false);
       }
-      router.refresh();
-    } else {
-      setError(result.error || "Submission failed");
+    } catch (error) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Saving failed. Please try again.",
+      );
       setShowConfirm(false);
+    } finally {
       setSubmitting(false);
     }
   }
@@ -103,6 +114,7 @@ export function SubmitSection({ jobId }: { jobId: string }) {
           value={name}
           onChange={(e) => setName(e.target.value)}
           className="min-h-[48px] text-base"
+          disabled={submitting || isSaving}
         />
       </div>
 
@@ -123,7 +135,7 @@ export function SubmitSection({ jobId }: { jobId: string }) {
       <Button
         type="button"
         className="min-h-[56px] w-full gap-2 text-lg font-semibold"
-        disabled={!name.trim() || !signatureData || submitting}
+        disabled={!name.trim() || !signatureData || submitting || isSaving}
         onClick={() => setShowConfirm(true)}
       >
         <Send className="size-5" />

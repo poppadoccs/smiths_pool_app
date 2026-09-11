@@ -46,9 +46,12 @@ export function buildSubmissionEmail({
   editUrl,
   pdfOmittedTooLarge = false,
 }: SubmissionEmailProps): string {
-  const includedUrlSet = new Set(
+  // Match the PDF: existing structured references remain visible unless
+  // their job-photo metadata explicitly excludes them. Older references
+  // can survive without a corresponding metadata row.
+  const excludedUrlSet = new Set(
     photos
-      .filter((photo) => photo.includedInPdf !== false)
+      .filter((photo) => photo.includedInPdf === false)
       .map((photo) => photo.url),
   );
   const inlineSummaryPhotoUrls = new Set(
@@ -56,7 +59,7 @@ export function buildSubmissionEmail({
       isSummaryFieldId(field.id)
         ? collectSummaryPhotoUrls(
             parseSummaryItems(formData, field.id) ?? [],
-          ).filter((url) => includedUrlSet.has(url))
+          ).filter((url) => !excludedUrlSet.has(url))
         : [],
     ),
   );
@@ -68,7 +71,7 @@ export function buildSubmissionEmail({
         : null;
       if (
         field.id === REINSPECTION_FIELD_ID &&
-        !hasReinspectionContent(formData, [...includedUrlSet])
+        !hasReinspectionContent(formData, [...inlineSummaryPhotoUrls])
       ) {
         return "";
       }
@@ -108,7 +111,7 @@ export function buildSubmissionEmail({
                     ? escapeHtml(item.text.trim()).replace(/\r?\n/g, "<br />")
                     : '<span style="color: #999;">(no notes)</span>';
                   const thumbs = item.photos
-                    .filter((url) => includedUrlSet.has(url))
+                    .filter((url) => !excludedUrlSet.has(url))
                     .map(
                       (url) => `
                         <a href="${escapeHtml(url)}" target="_blank" style="text-decoration: none;">

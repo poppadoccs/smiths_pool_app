@@ -4,38 +4,12 @@ import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import { del } from "@vercel/blob";
 import { buildPhotoRemovalPatch, isEditableCopy } from "@/lib/multi-photo";
-export async function savePhotoMetadata(
-  jobId: string,
-  photo: { url: string; filename: string; size: number },
-) {
-  const newPhoto = JSON.stringify([
-    {
-      url: photo.url,
-      filename: photo.filename,
-      size: photo.size,
-      uploadedAt: new Date().toISOString(),
-    },
-  ]);
+import type { PhotoMetadata } from "@/lib/photos";
+import type { FormField } from "@/lib/forms";
 
-  // DRAFT-only, atomic with the write (ultrareview bug_001): the upload
-  // pipeline (compress → blob upload → this action) spans seconds, so a
-  // submit can land mid-flight; without the status filter the photo would
-  // append to a SUBMITTED job the office already received.
-  const affected = await db.$executeRaw`
-    UPDATE jobs
-    SET photos = COALESCE(photos, '[]'::jsonb) || ${newPhoto}::jsonb
-    WHERE id = ${jobId} AND status::text = 'DRAFT'
-  `;
-  if (affected === 0) throw new Error("Job not found or no longer editable");
-
-  revalidatePath(`/jobs/${jobId}`);
-}
-
-// Toggle a photo's PDF-include flag. Mirrors deletePhoto's guards:
-// SUBMITTED jobs are terminal and editable copies share blobs with the
-// source. Editable copies CAN flip the include flag (it lives in the
-// copy's own job.photos JSON, not the shared blob), but we still block
-// SUBMITTED to keep the post-submit edit path going through createEditableCopy.
+// Editable copies can change their own include flags without changing shared
+// blobs. Both the early check and the UPDATE require a DRAFT job; the UPDATE
+// also protects against submission or archival after the early read.
 //
 // SQL strategy: rebuild the photos array atomically. For the matching
 // URL, jsonb_set writes `includedInPdf`; every sibling object is passed
@@ -51,12 +25,13 @@ export async function setPhotoIncludedInPdf(
     select: { status: true },
   });
   if (!job) throw new Error("Job not found");
-  if (job.status === "SUBMITTED") {
-    throw new Error("Cannot change photo PDF inclusion on a submitted job");
+  if (job.status !== "DRAFT") {
+    throw new Error(
+      `Cannot change photo PDF inclusion on a ${job.status.toLowerCase()} job`,
+    );
   }
 
-  // Stringify so Prisma can interpolate as a parameterized JSONB literal,
-  // matching the savePhotoMetadata pattern.
+  // Stringify so Prisma can interpolate as a parameterized JSONB literal.
   const includedJson = JSON.stringify(included);
   const affected = await db.$executeRaw`
     UPDATE jobs
@@ -71,77 +46,84 @@ export async function setPhotoIncludedInPdf(
       ), '[]'::jsonb)
       FROM jsonb_array_elements(COALESCE(photos, '[]'::jsonb)) WITH ORDINALITY AS t(elem, ordinality)
     )
-    WHERE id = ${jobId}
+    WHERE id = ${jobId} AND status::text = 'DRAFT'
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(COALESCE(photos, '[]'::jsonb)) AS photo
+        WHERE photo->>'url' = ${photoUrl}
+      )
   `;
-  if (affected === 0) throw new Error("Job not found");
+  if (affected === 0) {
+    throw new Error("Job not found, photo not found, or no longer editable");
+  }
 
   revalidatePath(`/jobs/${jobId}`);
 }
 
-export async function deletePhoto(jobId: string, photoUrl: string) {
-  // Server-side guards mirroring the UI read-only intent. UI hides the
-  // delete button on SUBMITTED jobs and on editable copies, but the
-  // action is reachable directly — re-check here before either
-  // destructive op. SUBMITTED is terminal (submitJob's atomic flip
-  // never reverses it) and __sourceJobId is set at copy creation and
-  // never cleared, so the read-then-check window has no real race for
-  // these specific invariants.
-  const job = await db.job.findUnique({
-    where: { id: jobId },
-    select: {
-      status: true,
-      formData: true,
-      template: { select: { fields: true } },
-    },
-  });
-  if (!job) throw new Error("Job not found");
-  if (job.status === "SUBMITTED") {
-    throw new Error("Cannot delete photos from a submitted job");
-  }
-  if (isEditableCopy(job.formData as Record<string, unknown> | null)) {
-    throw new Error("Cannot delete photos from an editable copy");
-  }
-
-  // Not fully atomic: Blob is deleted before the DB update. If the DB update
-  // fails after del(), the blob is gone but the metadata remains. Acceptable
-  // for now — a follow-up can wrap this in a compensating cleanup if needed.
-  await del(photoUrl);
-
-  const affected = await db.$executeRaw`
-    UPDATE jobs
-    SET photos = (
-      SELECT COALESCE(jsonb_agg(elem ORDER BY ordinality), '[]'::jsonb)
-      FROM jsonb_array_elements(COALESCE(photos, '[]'::jsonb)) WITH ORDINALITY AS t(elem, ordinality)
-      WHERE elem->>'url' != ${photoUrl}
-    )
-    WHERE id = ${jobId}
-  `;
-  if (affected === 0) throw new Error("Job not found");
-
-  // Strip every formData reference to the deleted URL (ultrareview
-  // bug_002): assignment-map buckets, legacy field mirrors, and summary
-  // bullets. Without this the ghost URL re-enters the PDF via Pass 1's
-  // external-URL branch and prints "[photo could not be loaded]" forever.
-  // Written as a DRAFT-guarded jsonb merge of only the changed keys, so
-  // concurrent autosave text writes are untouched.
-  const photoFieldIds = Array.isArray(job.template?.fields)
-    ? (job.template.fields as { id: string; type: string }[])
-        .filter((f) => f.type === "photo")
-        .map((f) => f.id)
-    : [];
-  const patch = buildPhotoRemovalPatch(
-    job.formData as Record<string, unknown> | null,
-    photoUrl,
-    photoFieldIds,
-  );
-  if (patch) {
-    const patchJson = JSON.stringify(patch);
-    await db.$executeRaw`
-      UPDATE jobs
-      SET form_data = COALESCE(form_data, '{}'::jsonb) || ${patchJson}::jsonb
-      WHERE id = ${jobId} AND status::text = 'DRAFT'
+export async function deletePhoto(
+  jobId: string,
+  photoUrl: string,
+): Promise<{ success: true; blobCleanupPending: boolean }> {
+  // Lock before reading the mutable JSON. A concurrent summary save either
+  // commits first and appears in this snapshot, or waits until this removal
+  // commits. Metadata and all references leave the job in the same write.
+  await db.$transaction(async (tx) => {
+    const [job] = await tx.$queryRaw<
+      {
+        status: string;
+        photos: PhotoMetadata[] | null;
+        formData: Record<string, unknown> | null;
+        templateFields: FormField[] | null;
+      }[]
+    >`
+      SELECT j.status::text AS status, j.photos, j.form_data AS "formData",
+        t.fields AS "templateFields"
+      FROM jobs j
+      LEFT JOIN form_templates t ON t.id = j.template_id
+      WHERE j.id = ${jobId}
+      FOR UPDATE OF j
     `;
+    if (!job) throw new Error("Job not found");
+    if (job.status !== "DRAFT") {
+      throw new Error(
+        `Cannot delete photos from a ${job.status.toLowerCase()} job`,
+      );
+    }
+    if (isEditableCopy(job.formData)) {
+      throw new Error("Cannot delete photos from an editable copy");
+    }
+
+    const photos = Array.isArray(job.photos) ? job.photos : [];
+    if (!photos.some((photo) => photo.url === photoUrl)) {
+      throw new Error("Photo does not belong to this job");
+    }
+
+    const photoFieldIds = Array.isArray(job.templateFields)
+      ? job.templateFields.filter((f) => f.type === "photo").map((f) => f.id)
+      : [];
+    const patch = buildPhotoRemovalPatch(job.formData, photoUrl, photoFieldIds);
+    const updated = await tx.job.updateMany({
+      where: { id: jobId, status: "DRAFT" },
+      data: {
+        photos: photos.filter((photo) => photo.url !== photoUrl),
+        ...(patch && { formData: { ...job.formData, ...patch } as object }),
+      },
+    });
+    if (updated.count === 0) throw new Error("Job is no longer editable");
+  });
+
+  // Never hold a database lock across Blob requests. Failed cleanup leaves an
+  // unreferenced blob, not a broken job or a stale snapshot restored over edits.
+  // Report the partial cleanup explicitly so the caller can show accurate UI.
+  let blobCleanupPending = false;
+  try {
+    await del(photoUrl);
+  } catch {
+    blobCleanupPending = true;
+    console.warn(
+      `[deletePhoto] Job ${jobId}: photo removed; Blob cleanup failed`,
+    );
   }
 
   revalidatePath(`/jobs/${jobId}`);
+  return { success: true, blobCleanupPending };
 }

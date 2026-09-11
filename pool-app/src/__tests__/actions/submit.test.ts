@@ -12,18 +12,28 @@ vi.mock("resend", () => {
   };
 });
 
-vi.mock("@/lib/db", () => ({
-  db: {
+vi.mock("@/lib/db", () => {
+  const transactionClient = {
     job: {
       findUnique: vi.fn(),
       update: vi.fn().mockResolvedValue({}),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
-    setting: {
-      findUnique: vi.fn().mockResolvedValue(null),
+    $queryRaw: vi.fn().mockResolvedValue([{ id: "job-1" }]),
+  };
+  return {
+    db: {
+      ...transactionClient,
+      $transaction: vi.fn(
+        async (work: (tx: typeof transactionClient) => Promise<unknown>) =>
+          work(transactionClient),
+      ),
+      setting: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
     },
-  },
-}));
+  };
+});
 
 // jsPDF emits data:application/pdf;filename=generated.pdf;base64,...
 vi.mock("@/lib/actions/generate-pdf", () => ({
